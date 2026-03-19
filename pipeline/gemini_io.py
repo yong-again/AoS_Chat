@@ -4,20 +4,77 @@ PDF 다운로드 + Gemini 업로드/추출 IO 모듈.
 
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import time
 from json import JSONDecodeError
+from typing import Any
 
 import requests
 from google import genai
 from google.genai import types
+from pypdf import PdfReader, PdfWriter
 
 from core import config as cfg
 from core.logging_config import get_logger
 from core.retry import extract_status_code, is_retryable_status, retry_with_exponential_backoff
 
 log = get_logger(__name__)
+
+
+# -----------------------------------------------------------------------------
+# PDF 청킹 유틸
+# -----------------------------------------------------------------------------
+
+
+def split_pdf_bytes(pdf_bytes: bytes, chunk_size: int) -> list[bytes]:
+    """PDF를 chunk_size 페이지 단위로 분할해 bytes 리스트로 반환."""
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    total_pages = len(reader.pages)
+    chunks: list[bytes] = []
+
+    for start in range(0, total_pages, chunk_size):
+        writer = PdfWriter()
+        for page in reader.pages[start: start + chunk_size]:
+            writer.add_page(page)
+        buf = io.BytesIO()
+        writer.write(buf)
+        chunks.append(buf.getvalue())
+
+    log.debug("PDF 청킹: 총 %d페이지 → %d청크 (chunk_size=%d)", total_pages, len(chunks), chunk_size)
+    return chunks
+
+
+def _merge_lists(a: list, b: list) -> list:
+    return a + b
+
+
+def _merge_dicts(base: dict, extra: dict) -> dict:
+    """두 dict를 재귀적으로 병합. list 값은 이어붙이고, dict 값은 재귀 병합."""
+    result = dict(base)
+    for key, val in extra.items():
+        if key not in result:
+            result[key] = val
+        elif isinstance(result[key], list) and isinstance(val, list):
+            result[key] = _merge_lists(result[key], val)
+        elif isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _merge_dicts(result[key], val)
+        # 스칼라(str 등)는 첫 청크 값 유지 (spearhead_name 등)
+    return result
+
+
+def merge_chunk_results(chunks: list[Any]) -> Any:
+    """청크별 파싱 결과를 하나로 병합."""
+    if not chunks:
+        return {}
+    result = chunks[0]
+    for chunk in chunks[1:]:
+        if isinstance(result, list) and isinstance(chunk, list):
+            result = _merge_lists(result, chunk)
+        elif isinstance(result, dict) and isinstance(chunk, dict):
+            result = _merge_dicts(result, chunk)
+    return result
 
 
 def download_pdf(url: str) -> bytes:

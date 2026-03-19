@@ -20,6 +20,8 @@ from pipeline.gemini_io import (
     delete_gemini_file,
     download_pdf,
     extract_json_with_gemini,
+    merge_chunk_results,
+    split_pdf_bytes,
     upload_pdf_to_gemini,
 )
 
@@ -106,18 +108,32 @@ def process_aos_pipeline(
             log.debug("  → PDF 다운로드 중: %s", url)
             pdf_bytes = download_pdf(url)
 
-            log.debug("  → Gemini 업로드 중")
-            aos_file = upload_pdf_to_gemini(client, pdf_bytes)
+            chunk_size = cfg.CHUNK_SIZES.get(db_target, 8)
+            chunks = split_pdf_bytes(pdf_bytes, chunk_size)
+            total_chunks = len(chunks)
 
-            log.debug("  → JSON 추출 중")
-            parsed = extract_json_with_gemini(client, aos_file, prompt)
-            client.files.delete(name=aos_file.name)
+            if total_chunks > 1:
+                log.info("  → 청킹 파싱: %d페이지 단위 / 총 %d청크", chunk_size, total_chunks)
+
+            chunk_results = []
+            for c_idx, chunk_bytes in enumerate(chunks, start=1):
+                if total_chunks > 1:
+                    log.debug("  → 청크 [%d/%d] Gemini 업로드 중", c_idx, total_chunks)
+                else:
+                    log.debug("  → Gemini 업로드 중")
+
+                aos_file = upload_pdf_to_gemini(client, chunk_bytes)
+                log.debug("  → 청크 [%d/%d] JSON 추출 중", c_idx, total_chunks)
+                parsed_chunk = extract_json_with_gemini(client, aos_file, prompt)
+                client.files.delete(name=aos_file.name)
+                chunk_results.append(parsed_chunk)
+                time.sleep(cfg.API_DELAY_SECONDS)
+
+            parsed = merge_chunk_results(chunk_results)
 
             paths = save_parsed_json(parsed, db_target, doc_name, output_dir)
             for p in paths:
                 log.info("  ✓ 저장: %s", p)
-
-            time.sleep(cfg.API_DELAY_SECONDS)
 
         except Exception as e:
             msg = f"[{idx}/{total}] {db_target} / {doc_name}"
