@@ -15,6 +15,7 @@ from google import genai
 from core import config as cfg
 from core.logging_config import get_logger, setup_logging
 from core.utils import build_output_path, save_json
+from pipeline.checkpoint import ask_resume, filter_pending, find_completed, print_checkpoint_status
 from pipeline.classifier import build_db_tasks, print_db_tasks_summary
 from pipeline.gemini_io import (
     delete_gemini_file,
@@ -88,11 +89,25 @@ def process_aos_pipeline(
         log.info("(dry_run: API 호출 없음)")
         return
 
-    # 전체 문서 수 집계
+    # 전체 태스크 목록
     all_tasks = [(db, task) for db, tasks in db_tasks.items() for task in tasks]
+    total_all = len(all_tasks)
+
+    # ── 체크포인트 확인 ──────────────────────────────────────────
+    completed = find_completed(all_tasks, output_dir)
+    if completed:
+        print_checkpoint_status(all_tasks, completed)
+        resume = ask_resume(len(completed), total_all)
+        if resume:
+            all_tasks = filter_pending(all_tasks, completed)
+            log.info("체크포인트 복원: %d개 건너뜀, %d개 남음", len(completed), len(all_tasks))
+        else:
+            log.info("처음부터 재시작합니다.")
+    # ────────────────────────────────────────────────────────────
+
     total = len(all_tasks)
     log.info("=" * 60)
-    log.info("파싱 시작: 총 %d개 문서", total)
+    log.info("파싱 시작: %d개 문서 (전체 %d개)", total, total_all)
     log.info("=" * 60)
 
     errors: list[str] = []
