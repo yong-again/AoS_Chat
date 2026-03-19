@@ -23,7 +23,6 @@ DEFAULT_LOG_FILE = "aos_chat.log"
 MAX_BYTES = 2 * 1024 * 1024  # 2MB
 BACKUP_COUNT = 5
 
-_LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 _LEVEL_COLORS = {
@@ -35,12 +34,17 @@ _LEVEL_COLORS = {
 }
 _RESET = "\033[0m"
 
+# 레벨 이름에만 색상 적용: %(levelname)-8s 자리를 컬러 버전으로 교체
+_LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+_COLOR_FORMAT = "%(asctime)s | {levelname} | %(name)s | %(message)s"
+
 
 class _ColorFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         color = _LEVEL_COLORS.get(record.levelname, "")
-        msg = super().format(record)
-        return f"{color}{msg}{_RESET}" if color else msg
+        colored_level = f"{color}{record.levelname:<8}{_RESET}" if color else f"{record.levelname:<8}"
+        fmt = _COLOR_FORMAT.format(levelname=colored_level)
+        return logging.Formatter(fmt, datefmt=_DATE_FORMAT).format(record)
 
 
 _root_configured = False
