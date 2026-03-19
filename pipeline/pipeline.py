@@ -17,6 +17,7 @@ from core.logging_config import get_logger, setup_logging
 from core.utils import build_output_path, save_json
 from pipeline.checkpoint import ask_resume, filter_pending, find_completed, print_checkpoint_status
 from pipeline.classifier import build_db_tasks, print_db_tasks_summary
+from pipeline.notifier import notify_pipeline_result
 from pipeline.gemini_io import (
     delete_gemini_file,
     download_pdf,
@@ -27,7 +28,6 @@ from pipeline.gemini_io import (
 )
 
 log = get_logger(__name__)
-
 
 # -----------------------------------------------------------------------------
 # 저장
@@ -164,6 +164,9 @@ def process_aos_pipeline(
         for err in errors:
             log.warning("  - %s", err)
     log.info("=" * 60)
+
+    # Telegram 알림
+    notify_pipeline_result(config.get("TELEGRAM_BOT_TOKEN", ""), total, errors)
 
 
 # -----------------------------------------------------------------------------

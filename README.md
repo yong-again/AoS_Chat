@@ -56,6 +56,8 @@ AoS_Chat/
 │   ├── classifier.py       문서명 → DB 분류 (rule/faction/spearhead/other)
 │   ├── scraper.py          Firecrawl 스크래핑 및 캐시 관리
 │   ├── gemini_io.py        PDF 다운로드 · Gemini 업로드 · JSON 추출
+│   ├── checkpoint.py       체크포인트 저장 및 재개 로직
+│   ├── notifier.py         외부 채널 알림 (Telegram 등)
 │   └── pipeline.py         오케스트레이션 (다운로드 → 파싱 → 저장)
 │
 ├── outputs/            # 파싱된 JSON 결과물
@@ -102,10 +104,12 @@ pip install streamlit chromadb sentence-transformers google-genai \
 ```env
 GEMINI_API_KEY=your_gemini_api_key
 FIRECRAWL_API_KEY=your_firecrawl_api_key
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 ```
 
 - **GEMINI_API_KEY**: [Google AI Studio](https://aistudio.google.com/) 에서 발급
 - **FIRECRAWL_API_KEY**: [Firecrawl](https://firecrawl.dev/) 에서 발급
+- **TELEGRAM_BOT_TOKEN**: [@BotFather](https://t.me/BotFather) 에서 봇 생성 후 발급 — 파이프라인 완료 시 Telegram으로 결과 알림 전송 (선택)
 
 ---
 
