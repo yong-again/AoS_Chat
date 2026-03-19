@@ -1,50 +1,83 @@
 # Warhammer Age of Sigmar AI 룰마스터
 
-워해머 미니어처 게임 정보를 한곳에 모아, 플레이 중 규칙·팩션 정보를 빠르게 찾고 이해할 수 있도록 돕는 RAG 기반 AI 도우미입니다.
+워해머 에이지 오브 지그마 공식 PDF를 자동으로 수집·파싱하여 RAG 기반으로 규칙을 답변하는 AI 도우미입니다.
 
 ---
 
-## 기획의도
+## 기획 의도
 
-- **워해머 에이지 오브 지그마** 관련 공식 문서(룰북, FAQ, 팩션, 스피어헤드 등)를 한곳에 모아
-- 게임 플레이 중 **규칙 해석·설명**과 **팩션별 정보**를 자연어 질문으로 바로 조회
-- 공식 PDF 기반 답변으로 **오해·할루시네이션을 줄이고**, 출처를 함께 제공
+- 공식 다운로드 페이지의 **룰북·팩션 팩·스피어헤드·기란의 재앙** 등 PDF를 자동 수집
+- Gemini로 PDF를 구조화된 JSON으로 파싱해 ChromaDB에 인덱싱
+- 게임 플레이 중 자연어 질문으로 **규칙 해석·팩션 정보**를 즉시 조회
+- 공식 문서 기반 답변으로 **할루시네이션을 줄이고** 출처를 함께 제공
 
 ---
 
-## 주요 기능
+## 아키텍처
 
-| 기능 | 설명 |
-|------|------|
-| **룰북 해석** | 코어 룰, FAQ, 배틀스크롤 등 규칙 문서를 벡터 검색 후 AI가 해석·요약 |
-| **룰북 설명** | "돌격 이동 규칙이 뭐야?", "스피어헤드 규칙 알려줘" 등 질문에 문서 기반으로 답변 |
-| **팩션별 정보** | 각 팩션 PDF를 인덱싱해, 특정 팩션 규칙·유닛·특수 규칙 질의 지원 |
-| **출처 표시** | 답변 시 참고한 문서 제목·URL·유사도 거리를 함께 표시 |
+```
+공식 PDF 다운로드 페이지
+        │
+        ▼
+  [Firecrawl 스크래핑]     ← pipeline/scraper.py
+  data.json (URL 캐시)
+        │
+        ▼
+  [Gemini PDF 파싱]        ← pipeline/gemini_io.py
+  outputs/<db>/*.json       ← pipeline/classifier.py 로 DB 분류
+        │
+        ▼
+  [ChromaDB 인덱싱]         ← (별도 빌드 단계)
+        │
+        ▼
+  [Streamlit 챗 UI]         ← app.py
+```
 
 ---
 
 ## 프로젝트 구조
 
 ```
-rag-test/
-├── chunk.py      # Warhammer Community 다운로드 페이지 스크래핑 → rule/faction/spearhead 분류
-├── build_db.py   # PDF 다운로드·텍스트 추출·청킹·임베딩 후 ChromaDB에 저장
-├── app.py        # Streamlit 웹 앱 (채팅 UI, RAG 질의·답변)
-├── chat.py       # CLI용 RAG 챗 (Gemini + rule_db)
-├── read.py       # CLI용 벡터 검색 테스트 (rule/faction/spearhead)
-├── .env          # API 키 설정 (GEMINI_API_KEY, FIRECRAWL_API_KEY)
-└── my_warhammer_db/   # ChromaDB 영구 저장 경로 (실행 후 생성)
+AoS_Chat/
+├── app.py              # Streamlit 웹 앱 (RAG 채팅 UI)
+├── main.py             # 전체 파이프라인 실행 진입점
+├── runner.py           # 단일 문서 실행 (디버그용)
+├── data.json           # PDF URL 인덱스 캐시 (스크래핑 결과)
+│
+├── core/               # 공용 모듈
+│   ├── config.py           설정·상수·Gemini 프롬프트
+│   ├── logging_config.py   로깅 설정 (컬러 콘솔 + 파일)
+│   ├── retry.py            지수 백오프 재시도 로직
+│   └── utils.py            경로·JSON·파일명 유틸리티
+│
+├── pipeline/           # 파이프라인 코어 로직
+│   ├── classifier.py       문서명 → DB 분류 (rule/faction/spearhead/other)
+│   ├── scraper.py          Firecrawl 스크래핑 및 캐시 관리
+│   ├── gemini_io.py        PDF 다운로드 · Gemini 업로드 · JSON 추출
+│   └── pipeline.py         오케스트레이션 (다운로드 → 파싱 → 저장)
+│
+├── outputs/            # 파싱된 JSON 결과물
+│   ├── rule_db/            코어 룰 문서
+│   ├── faction_db/         팩션 팩 (매치드 플레이)
+│   ├── spearhead_db/       스피어헤드 문서
+│   ├── balance_db/         배틀 프로필 (포인트)
+│   └── other_db/           기란의 재앙 등 기타 문서
+│
+└── logs/               # 로그 파일 (자동 생성)
 ```
 
 ---
 
 ## 기술 스택
 
-- **벡터 DB**: ChromaDB (cosine 유사도)
-- **임베딩**: SentenceTransformer (`paraphrase-multilingual-MiniLM-L12-v2`)
-- **LLM**: Google Gemini (`gemini-2.5-flash`)
-- **스크래핑**: Firecrawl (다운로드 페이지), `pypdf` (PDF 텍스트 추출)
-- **웹 UI**: Streamlit
+| 구분 | 기술 |
+|------|------|
+| PDF 파싱 | Google Gemini (`gemini-2.5-flash-lite`) |
+| 벡터 DB | ChromaDB (cosine 유사도) |
+| 임베딩 | SentenceTransformer (`paraphrase-multilingual-MiniLM-L12-v2`) |
+| 스크래핑 | Firecrawl |
+| 웹 UI | Streamlit |
+| LLM 답변 | Google Gemini (`gemini-2.5-flash`) |
 
 ---
 
@@ -53,82 +86,96 @@ rag-test/
 ### 1. 의존성 설치
 
 ```bash
-cd rag-test
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-pip install streamlit chromadb sentence-transformers google-genai python-dotenv firecrawl-py pypdf requests tqdm
+pip install streamlit chromadb sentence-transformers google-genai \
+            python-dotenv firecrawl-py requests
 ```
 
 ### 2. 환경 변수
 
-프로젝트 루트에 `.env` 파일을 만들고 다음 키를 설정합니다.
+프로젝트 루트에 `.env` 파일을 생성합니다.
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key
 FIRECRAWL_API_KEY=your_firecrawl_api_key
 ```
 
-- **GEMINI_API_KEY**: [Google AI Studio](https://aistudio.google.com/)에서 발급
-- **FIRECRAWL_API_KEY**: [Firecrawl](https://firecrawl.dev/)에서 발급 (chunk.py에서 다운로드 페이지 스크래핑 시 사용)
-
-### 3. DB 구축 (최초 1회)
-
-1. **문서 목록 수집 및 벡터 DB 저장**  
-   `chunk.py`는 다운로드 페이지를 스크래핑해 `rule_db`, `faction_db`, `spearhead_db` 리스트를 만들고, ChromaDB에 PDF를 청킹·임베딩해 저장합니다.
-
-   ```bash
-   python chunk.py
-   ```
-
-2. **이미 목록이 있을 때 DB만 재구축**  
-   `build_db.py`는 `chunk.py`에서 정의된 `rule_db`, `faction_db`, `spearhead_db`가 같은 프로세스/파일에서 사용 가능해야 합니다.  
-   (실제로는 `chunk.py`에서 리스트를 만든 뒤 `build_db.py`를 import하거나, `build_db.py`에서 해당 리스트를 정의해 사용하는 방식으로 맞춰야 합니다. 현재는 `chunk.py` 실행 시 스크래핑 + DB 저장까지 수행하는 구조로 보입니다.)
-
-   DB만 따로 다시 만들고 싶다면 `build_db.py`에 `rule_db`, `faction_db`, `spearhead_db`를 채워 넣은 뒤:
-
-   ```bash
-   python build_db.py
-   ```
+- **GEMINI_API_KEY**: [Google AI Studio](https://aistudio.google.com/) 에서 발급
+- **FIRECRAWL_API_KEY**: [Firecrawl](https://firecrawl.dev/) 에서 발급
 
 ---
 
 ## 실행 방법
 
-### 웹 앱 (권장)
+### 1단계: PDF 파싱 및 JSON 저장
+
+```bash
+# 전체 문서 처리 (data.json 캐시 재사용)
+python main.py
+
+# 분류 요약만 확인 (API 호출 없음)
+python main.py --dry-run
+
+# 특정 섹션만 처리
+python main.py --section "Spearhead"
+python main.py --section "Faction Packs"
+
+# 웹에서 PDF 목록 재스크래핑 후 전체 처리
+python main.py --force-scrape
+```
+
+> 결과는 `outputs/<db_name>/` 아래에 JSON 파일로 저장됩니다.
+
+단일 문서만 처리하려면 (디버그):
+
+```bash
+python runner.py --keyword "Lumineth Realm-lords"
+```
+
+### 2단계: 웹 앱 실행
 
 ```bash
 streamlit run app.py
 ```
 
-브라우저에서 열리는 채팅 화면에서 규칙·팩션 관련 질문을 입력하면, RAG 기반으로 답변과 출처가 표시됩니다.
+브라우저 채팅창에서 규칙·팩션 관련 질문을 입력하면 RAG 기반으로 답변과 출처가 표시됩니다.
 
-### CLI 검색 (벡터 검색만)
+---
 
-```bash
-python read.py
+## DB 분류 기준
+
+`pipeline/classifier.py`에서 문서명을 기준으로 자동 분류합니다.
+
+| DB | 분류 조건 (문서명 키워드) |
+|----|--------------------------|
+| `rule_db` | Core Rules, Rules Updates, Glossary |
+| `balance_db` | Battle Profiles |
+| `faction_db` | Faction Pack: |
+| `spearhead_db` | Spearhead (Reference/Doubles → 코어 룰, 나머지 → 팩션 룰) |
+| `other_db` | Scourge of Ghyran |
+
+---
+
+## 로그
+
+콘솔은 레벨별 컬러로 출력되며, `logs/aos_chat.log`에 파일로도 저장됩니다.
+
 ```
-
-`read.py` 내부의 `search_optimized_chunks(..., rule_collection)` 등 호출을 바꿔서 `rule_collection` / `faction_collection` / `spearhead_collection`에 대해 테스트할 수 있습니다.
-
-### CLI 챗 (RAG + Gemini)
-
-```bash
-python chat.py
+환경 변수 AOS_LOG_LEVEL=DEBUG  로 레벨 변경 가능 (기본: INFO)
 ```
-
-`chat.py` 끝부분의 `ask_warhammer_rule_gemini("...", rule_collection)` 인자를 바꿔서 질문 문구와 컬렉션(rule/faction/spearhead)을 바꿀 수 있습니다.
 
 ---
 
 ## 데이터 출처
 
-- 규칙·팩션·스피어헤드 PDF 링크는 [Warhammer Community - Age of Sigmar Downloads](https://www.warhammer-community.com/en-gb/downloads/warhammer-age-of-sigmar/) 페이지에서 수집됩니다.
-- 상업적 재배포가 아닌 개인/로컬 활용 목적의 스크래핑·인덱싱임을 전제로 합니다.
+규칙 PDF는 [Warhammer Community - Age of Sigmar Downloads](https://www.warhammer-community.com/en-gb/downloads/warhammer-age-of-sigmar/) 페이지에서 수집됩니다.
+개인·로컬 활용 목적의 인덱싱이며 상업적 재배포가 아닙니다.
 
 ---
 
-## 라이선스 및 면책
+## 면책 사항
 
-- 이 프로젝트는 Warhammer/게임즈 워크숍의 공식 제품이 아니며, 규칙 해석은 참고용입니다.  
-- 공식 토너먼트·공식 판단이 필요한 경우 반드시 공식 룰북과 GW 공지에 의존하세요.
+이 프로젝트는 Games Workshop의 공식 제품이 아닙니다.
+규칙 해석은 참고용이며, 공식 토너먼트·판정은 반드시 공식 룰북과 GW 공지를 따르세요.
