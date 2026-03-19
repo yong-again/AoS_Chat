@@ -1,0 +1,37 @@
+# Env / credentials
+.env
+.env.*
+
+# Virtual environments
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+logs/
+*.log
+
+# Outputs / generated data
+outputs/
+data.json
+*.pdf
+*.tmp
+*.cache
+
+# DB dump folders (generated JSON from pipeline)
+*_db/
+pearhead_db/
+spearhead_db/
+faction_db/
+balance_db/
+other_db/
+
+# OS / editor
+.DS_Store
+.vscode/
+.cursor/
+
