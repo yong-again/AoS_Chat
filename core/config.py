@@ -24,7 +24,7 @@ DB_NAMES = ("rule_db", "faction_db", "balance_db", "spearhead_db", "other_db")
 # Gemini 설정
 # -----------------------------------------------------------------------------
 
-GEMINI_MODEL = "gemini-2.5-flash-lite"
+GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_JSON_MIME = "application/json"
 GEMINI_TEMPERATURE = 0.1
 API_DELAY_SECONDS = 5
@@ -100,3 +100,56 @@ BALANCE_PROMPT = """
 
 DEFAULT_PROMPT = "문서의 핵심 내용을 구조화된 JSON으로 추출하세요."
 
+SPEARHEAD_FACTION_PROMPT = """
+이 문서는 워해머 에이지 오브 지그마의 특정 팩션 전용 '스피어헤드(Spearhead)' 규칙 문서입니다.
+이 문서의 내용을 다음 JSON 구조로 완벽하게 추출하세요. 유닛의 워스크롤을 절대 생략해서는 안 됩니다.
+
+{
+  "spearhead": {
+    "spearhead_name": "스피어헤드 팩트 이름",
+    "spearhead_rules": [
+      {"name": "규칙명/어빌리티명/강화명", "effect": "설명"}
+    ],
+    "warscrolls": [
+      {
+        "unit_name": "유닛 이름",
+        "stats": {"M": "이동", "S": "세이브", "C": "컨트롤", "H": "체력"},
+        "weapons": [
+          {"name": "무기명", "type": "Melee/Ranged", "range": "거리", "attacks": "횟수", "hit": "명중", "wound": "운드", "rend": "관통", "damage": "피해", "ability": "특수 능력"}
+        ],
+        "abilities": [
+          {"title": "능력 이름", "timing": "사용 단계", "effect": "능력 효과 설명"}
+        ],
+        "keywords": ["키워드1", "키워드2"]
+      }
+    ]
+  }
+}
+"""
+
+OTHER_PROMPT = """
+이 문서는 워해머 에이지 오브 지그마의 특수 규칙(예: 기란의 재앙 등)입니다.
+문서의 내용을 다음 표준 구조에 최대한 맞추어 JSON 배열로 추출하세요:
+
+[
+  {
+    "name": "팩션 또는 규칙 세트 이름",
+    "army_rules": [
+      {"name": "규칙명/특성명", "effect": "설명"}
+    ],
+    "warscrolls": [
+      {
+        "unit_name": "유닛 이름",
+        "stats": {"M": "이동", "S": "세이브", "C": "컨트롤", "H": "체력"},
+        "weapons": [
+          {"name": "무기명", "type": "Melee/Ranged", "range": "거리", "attacks": "횟수", "hit": "명중", "wound": "운드", "rend": "관통", "damage": "피해", "ability": "특수 능력"}
+        ],
+        "abilities": [
+          {"title": "능력 이름", "timing": "사용 단계", "effect": "능력 효과 설명"}
+        ],
+        "keywords": ["키워드1", "키워드2"]
+      }
+    ]
+  }
+]
+"""

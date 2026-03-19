@@ -6,18 +6,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from logging_config import get_logger
-
-import config as cfg
+from core.logging_config import get_logger
+from core import config as cfg
 
 log = get_logger(__name__)
 
 
 def classify_document(doc_name: str) -> Optional[tuple[str, str]]:
-    """
-    문서명으로 DB 타겟과 사용할 프롬프트 결정.
-    제외 대상이면 None, 아니면 (db_target, prompt) 튜플 반환.
-    """
     if any(ex in doc_name for ex in cfg.EXCLUDE_KEYWORDS):
         return None
 
@@ -25,12 +20,17 @@ def classify_document(doc_name: str) -> Optional[tuple[str, str]]:
         return ("rule_db", cfg.RULE_PROMPT)
     if "Battle Profiles" in doc_name:
         return ("balance_db", cfg.BALANCE_PROMPT)
-    if "Spearhead" in doc_name:
-        return ("spearhead_db", cfg.RULE_PROMPT)
+
+    # 스피어헤드 라우팅 세분화
+    if "Spearhead Reference" in doc_name or "Spearhead Doubles" in doc_name:
+        return ("spearhead_db", cfg.RULE_PROMPT)  # 코어 룰 성격의 스피어헤드 문서
+    elif "Spearhead" in doc_name:
+        return ("spearhead_db", cfg.SPEARHEAD_FACTION_PROMPT)  # 특정 팩션의 스피어헤드 뱅가드 문서
+
     if "Faction Pack:" in doc_name:
         return ("faction_db", cfg.FACTION_PROMPT)
     if "Scourge of Ghyran" in doc_name:
-        return ("other_db", cfg.DEFAULT_PROMPT)
+        return ("other_db", cfg.OTHER_PROMPT)
 
     return None
 
@@ -54,4 +54,3 @@ def print_db_tasks_summary(db_tasks: dict[str, list], top_n: int = 3) -> None:
         log.info("--- %s (총 %s개) ---", db_name, len(task_list))
         for task in task_list[:top_n]:
             log.info("  [%s]", task["name"])
-

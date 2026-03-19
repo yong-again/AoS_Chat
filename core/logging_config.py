@@ -3,7 +3,7 @@ AoS_Chat 공통 로깅 설정.
 콘솔 + 파일 출력, 로그 레벨/경로 설정, get_logger()로 모듈별 로거 사용.
 
 Usage:
-    from logging_config import setup_logging, get_logger
+    from core.logging_config import setup_logging, get_logger
 
     setup_logging(level="DEBUG")  # 앱 시작 시 한 번 (선택)
     log = get_logger(__name__)
@@ -18,13 +18,30 @@ from pathlib import Path
 
 # 기본값
 DEFAULT_LOG_LEVEL = os.environ.get("AOS_LOG_LEVEL", "INFO").upper()
-DEFAULT_LOG_DIR = Path(__file__).resolve().parent / "logs"
+DEFAULT_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"  # AoS_Chat/logs
 DEFAULT_LOG_FILE = "aos_chat.log"
 MAX_BYTES = 2 * 1024 * 1024  # 2MB
 BACKUP_COUNT = 5
 
 _LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+_LEVEL_COLORS = {
+    "DEBUG":    "\033[36m",   # cyan
+    "INFO":     "\033[32m",   # green
+    "WARNING":  "\033[33m",   # yellow
+    "ERROR":    "\033[31m",   # red
+    "CRITICAL": "\033[35m",   # magenta
+}
+_RESET = "\033[0m"
+
+
+class _ColorFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        color = _LEVEL_COLORS.get(record.levelname, "")
+        msg = super().format(record)
+        return f"{color}{msg}{_RESET}" if color else msg
+
 
 _root_configured = False
 
@@ -53,12 +70,13 @@ def setup_logging(
     root.setLevel(log_level)
     root.handlers.clear()
 
-    formatter = logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
+    plain_formatter = logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
+    color_formatter = _ColorFormatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
 
     if console:
         handler = logging.StreamHandler(sys.stderr)
         handler.setLevel(log_level)
-        handler.setFormatter(formatter)
+        handler.setFormatter(color_formatter)
         root.addHandler(handler)
 
     dir_path = Path(log_dir) if log_dir is not None else DEFAULT_LOG_DIR
@@ -73,7 +91,7 @@ def setup_logging(
             encoding="utf-8",
         )
         fh.setLevel(log_level)
-        fh.setFormatter(formatter)
+        fh.setFormatter(plain_formatter)
         root.addHandler(fh)
     except OSError:
         root.warning("로그 파일을 열 수 없어 파일 로깅을 건너뜁니다: %s", filepath)

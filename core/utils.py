@@ -16,8 +16,8 @@ from typing import Any
 
 
 def project_dir() -> Path:
-    """`AoS_Chat` 디렉터리(이 파일이 있는 폴더) 반환."""
-    return Path(__file__).resolve().parent
+    """`AoS_Chat` 디렉터리 반환."""
+    return Path(__file__).resolve().parent.parent  # core/ → AoS_Chat/
 
 
 def ensure_dir(path: str | Path) -> Path:
@@ -35,8 +35,6 @@ def safe_filename(name: str, *, max_len: int = 120) -> str:
     - 허용: a-z 0-9 _ . -
     """
     s = name.strip().lower()
-    # \s(whitespace)를 의도한 것이므로 \\s가 아닌 \s를 사용해야 합니다.
-    # (\\s는 문자 's'를 구분자로 잘못 처리해 spearhead -> pearhead 같은 버그를 유발)
     s = re.sub(r"[\s/\\:|]+", "_", s)
     s = re.sub(r"[^a-z0-9_.-]+", "", s)
     s = re.sub(r"_+", "_", s).strip("._-")
@@ -102,4 +100,3 @@ def build_output_path(
     target_dir = ensure_dir(root / safe_filename(db_target))
     filename = safe_filename(doc_name) + ext
     return target_dir / filename
-

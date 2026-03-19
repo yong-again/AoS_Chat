@@ -11,7 +11,7 @@ from typing import Optional
 
 import requests
 
-from logging_config import get_logger
+from core.logging_config import get_logger
 
 log = get_logger(__name__)
 
@@ -91,4 +91,3 @@ def retry_with_exponential_backoff(
 
     if last_exc is not None:
         raise last_exc
-

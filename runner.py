@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from dotenv import dotenv_values
 
-from logging_config import get_logger, setup_logging
-from scraper import get_or_scrape_pdf_index
-from utils import default_cache_path
+from core.logging_config import get_logger, setup_logging
+from pipeline.scraper import get_or_scrape_pdf_index
+from core.utils import default_cache_path
 from pipeline import process_aos_pipeline
 
 log = get_logger(__name__)
@@ -30,6 +30,11 @@ def build_single_doc_data(
 
 if __name__ == "__main__":
     setup_logging()
+    import argparse
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--keyword", type=str, default="Lumineth Realm-lords")
+    args = parser.parse_args()
 
     env_path = "/workspace/AoS_Chat/.env"
     _ = dotenv_values(env_path)  # env 파일 존재 확인용 (키는 pipeline 내부에서 다시 로드)
@@ -37,7 +42,7 @@ if __name__ == "__main__":
     data = get_or_scrape_pdf_index(cache_path=default_cache_path(), env_path=env_path, force=False)
 
     # 한 개 문서만 실행하고 싶을 때 keyword만 바꾸면 됨
-    keyword = "Kharadron Overlords"
+    keyword = args.keyword
     single = build_single_doc_data(data, keyword=keyword)
 
     process_aos_pipeline(pdf_data_dict=single, config_path=env_path, output_dir="/workspace/AoS_Chat/outputs", dry_run=False)

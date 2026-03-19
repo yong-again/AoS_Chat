@@ -15,9 +15,9 @@ from typing import Optional
 from dotenv import dotenv_values
 from firecrawl import FirecrawlApp
 
-import config as cfg
-from logging_config import get_logger
-from utils import load_json, save_json
+from core import config as cfg
+from core.logging_config import get_logger
+from core.utils import load_json, save_json
 
 log = get_logger(__name__)
 
@@ -31,7 +31,7 @@ def fetch_markdown(url: str, *, firecrawl_api_key: str) -> str:
 def parse_pdf_index(markdown_content: str) -> dict[str, dict[str, str]]:
     """
     마크다운에서 #### 섹션과 [텍스트](.pdf) 링크 파싱.
-    반환: { \"섹션명\": { \"문서명\": \"pdf_url\", ... }, ... }
+    반환: { "섹션명": { "문서명": "pdf_url", ... }, ... }
     """
     data: dict[str, dict[str, str]] = {}
     current_key: Optional[str] = None
@@ -76,4 +76,3 @@ def get_or_scrape_pdf_index(
     save_json(cache_path, data)
     log.info("pdf index 저장: %s", cache_path)
     return data
-

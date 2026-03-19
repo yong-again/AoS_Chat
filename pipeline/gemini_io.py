@@ -13,9 +13,9 @@ import requests
 from google import genai
 from google.genai import types
 
-import config as cfg
-from logging_config import get_logger
-from retry import extract_status_code, is_retryable_status, retry_with_exponential_backoff
+from core import config as cfg
+from core.logging_config import get_logger
+from core.retry import extract_status_code, is_retryable_status, retry_with_exponential_backoff
 
 log = get_logger(__name__)
 
@@ -88,10 +88,8 @@ def extract_json_with_gemini(client: genai.Client, file: types.File, prompt: str
         return json.loads(response.text)
 
     def _retry_if(exc: Exception) -> bool:
-        # google.genai.errors.ServerError: 503 UNAVAILABLE (high demand) 등
         if is_retryable_status(extract_status_code(exc)):
             return True
-        # 응답이 간헐적으로 JSON이 아닐 때도 재시도
         if isinstance(exc, JSONDecodeError):
             return True
         return False
@@ -109,4 +107,3 @@ def delete_gemini_file(client: genai.Client, name: str) -> None:
         label="gemini_file_delete",
         retry_if=lambda exc: is_retryable_status(extract_status_code(exc)),
     )
-

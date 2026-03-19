@@ -1,9 +1,9 @@
 """AoS (Age of Sigmar) PDF 파이프라인(오케스트레이션).
 
 이 파일은 오케스트레이션만 담당합니다.
-- 분류/태스크: `classifier.py`
-- PDF 다운로드 & Gemini 처리(재시도 포함): `gemini_io.py`
-- 저장 경로/파일명 규칙: `utils.py` (디렉터리 자동 생성)
+- 분류/태스크: `pipeline/classifier.py`
+- PDF 다운로드 & Gemini 처리(재시도 포함): `pipeline/gemini_io.py`
+- 저장 경로/파일명 규칙: `core/utils.py` (디렉터리 자동 생성)
 """
 
 import json
@@ -12,16 +12,16 @@ import time
 from dotenv import dotenv_values
 from google import genai
 
-import config as cfg
-from classifier import build_db_tasks, print_db_tasks_summary
-from gemini_io import (
+from core import config as cfg
+from core.logging_config import get_logger, setup_logging
+from core.utils import build_output_path, save_json
+from pipeline.classifier import build_db_tasks, print_db_tasks_summary
+from pipeline.gemini_io import (
     delete_gemini_file,
     download_pdf,
     extract_json_with_gemini,
     upload_pdf_to_gemini,
 )
-from logging_config import get_logger, setup_logging
-from utils import build_output_path, save_json
 
 log = get_logger(__name__)
 
@@ -36,11 +36,28 @@ def save_parsed_json(
     db_target: str,
     doc_name: str,
     out_dir: str = ".",
-) -> str:
-    """파싱 결과를 JSON 파일로 저장. 파일 경로 반환."""
-    path = build_output_path(db_target=db_target, doc_name=doc_name, outputs_dir=out_dir)
-    save_json(path, parsed)
-    return str(path)
+) -> list[str]:
+    """파싱 결과를 JSON 파일로 저장. 분리 저장된 파일들의 경로 리스트 반환."""
+    saved_paths = []
+
+    # 팩션 팩의 경우 본편과 스피어헤드를 물리적으로 분리
+    if db_target == "faction_db" and isinstance(parsed, dict) and "aos_matched_play" in parsed and "spearhead" in parsed:
+        # 본편 저장
+        path_faction = build_output_path(db_target="faction_db", doc_name=doc_name, outputs_dir=out_dir)
+        save_json(path_faction, parsed["aos_matched_play"])
+        saved_paths.append(str(path_faction))
+
+        # 스피어헤드 저장
+        path_spearhead = build_output_path(db_target="spearhead_db", doc_name=doc_name, outputs_dir=out_dir)
+        save_json(path_spearhead, parsed["spearhead"])
+        saved_paths.append(str(path_spearhead))
+    else:
+        # 일반 문서 저장
+        path = build_output_path(db_target=db_target, doc_name=doc_name, outputs_dir=out_dir)
+        save_json(path, parsed)
+        saved_paths.append(str(path))
+
+    return saved_paths
 
 
 # -----------------------------------------------------------------------------
@@ -101,11 +118,9 @@ if __name__ == "__main__":
     # === 여기부터 디버그용: 특정 문서 1개만 실행 ===
     DEBUG_DOC_NAME = "Lumineth realm-load"  # 원하는 문서 이름으로 수정
 
-    # load data from json file
     with open("/workspace/AoS_Chat/data.json", "r") as f:
         data = json.load(f)
 
-    # data 구조에서 해당 문서만 골라낸 dict 생성
     debug_data = {}
     for section, items in data.items():
         for doc_name, url in items.items():
@@ -119,5 +134,4 @@ if __name__ == "__main__":
             print(f"[섹션] {section} / [문서] {name}")
             print(f"URL: {url}")
 
-    # 실제 파이프라인 실행 (dry_run=False 로 설정!)
     process_aos_pipeline(pdf_data_dict=debug_data, config_path="/workspace/AoS_Chat/.env", dry_run=False)
