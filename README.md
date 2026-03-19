@@ -15,22 +15,24 @@
 
 ## 아키텍처
 
-```
-공식 PDF 다운로드 페이지
-        │
-        ▼
-  [Firecrawl 스크래핑]     ← pipeline/scraper.py
-  data.json (URL 캐시)
-        │
-        ▼
-  [Gemini PDF 파싱]        ← pipeline/gemini_io.py
-  outputs/<db>/*.json       ← pipeline/classifier.py 로 DB 분류
-        │
-        ▼
-  [ChromaDB 인덱싱]         ← (별도 빌드 단계)
-        │
-        ▼
-  [Streamlit 챗 UI]         ← app.py
+```mermaid
+flowchart TD
+    A([Warhammer Community\n다운로드 페이지]) -->|Firecrawl 스크래핑| B[pipeline/scraper.py]
+    B -->|URL 인덱스 저장| C[(data.json\nURL 캐시)]
+
+    C --> D[pipeline/classifier.py\n문서명 → DB 분류]
+
+    D -->|PDF 다운로드 + Gemini 파싱| E[pipeline/gemini_io.py]
+
+    E --> F[(outputs/rule_db)]
+    E --> G[(outputs/faction_db)]
+    E --> H[(outputs/spearhead_db)]
+    E --> I[(outputs/balance_db)]
+    E --> J[(outputs/other_db)]
+
+    F & G & H & I & J -->|ChromaDB 인덱싱| K[(ChromaDB\nmy_warhammer_db)]
+
+    K -->|벡터 검색 + Gemini 답변| L([app.py\nStreamlit 챗 UI])
 ```
 
 ---
