@@ -86,24 +86,53 @@ def process_aos_pipeline(
         log.info("(dry_run: API 호출 없음)")
         return
 
-    for db_target, task_list in db_tasks.items():
-        for task in task_list:
-            doc_name = task["name"]
-            url = task["url"]
-            prompt = task["prompt"]
-            log.info("[%s] 파싱 시작: %s", db_target, doc_name)
+    # 전체 문서 수 집계
+    all_tasks = [(db, task) for db, tasks in db_tasks.items() for task in tasks]
+    total = len(all_tasks)
+    log.info("=" * 60)
+    log.info("파싱 시작: 총 %d개 문서", total)
+    log.info("=" * 60)
 
-            try:
-                pdf_bytes = download_pdf(url)
-                aos_file = upload_pdf_to_gemini(client, pdf_bytes)
-                parsed = extract_json_with_gemini(client, aos_file, prompt)
-                client.files.delete(name=aos_file.name)
+    errors: list[str] = []
 
-                path = save_parsed_json(parsed, db_target, doc_name, output_dir)
-                log.info("저장 완료: %s", path)
-                time.sleep(cfg.API_DELAY_SECONDS)
-            except Exception as e:
-                log.exception("에러 (%s): %s", doc_name, e)
+    for idx, (db_target, task) in enumerate(all_tasks, start=1):
+        doc_name = task["name"]
+        url = task["url"]
+        prompt = task["prompt"]
+
+        log.info("[%d/%d] (%s) %s", idx, total, db_target, doc_name)
+
+        try:
+            log.debug("  → PDF 다운로드 중: %s", url)
+            pdf_bytes = download_pdf(url)
+
+            log.debug("  → Gemini 업로드 중")
+            aos_file = upload_pdf_to_gemini(client, pdf_bytes)
+
+            log.debug("  → JSON 추출 중")
+            parsed = extract_json_with_gemini(client, aos_file, prompt)
+            client.files.delete(name=aos_file.name)
+
+            paths = save_parsed_json(parsed, db_target, doc_name, output_dir)
+            for p in paths:
+                log.info("  ✓ 저장: %s", p)
+
+            time.sleep(cfg.API_DELAY_SECONDS)
+
+        except Exception as e:
+            msg = f"[{idx}/{total}] {db_target} / {doc_name}"
+            errors.append(msg)
+            log.error("  ✗ 에러 발생 (%s)", msg)
+            log.exception("    원인: %s", e)
+
+    # 최종 요약
+    log.info("=" * 60)
+    log.info("파싱 완료: 성공 %d개 / 실패 %d개 / 전체 %d개", total - len(errors), len(errors), total)
+    if errors:
+        log.warning("실패한 문서 목록:")
+        for err in errors:
+            log.warning("  - %s", err)
+    log.info("=" * 60)
 
 
 # -----------------------------------------------------------------------------
