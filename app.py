@@ -5,7 +5,108 @@ from google import genai
 from google.genai import types
 from dotenv import dotenv_values
 
-st.set_page_config(page_title="Warhammer AI 룰마스터", page_icon="🎲")
+st.set_page_config(page_title="Warhammer AI 룰마스터", page_icon="⚔️", layout="centered")
+
+# ─── 테마 CSS ─────────────────────────────────────────────────────────────────
+def inject_theme():
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Cinzel+Decorative:wght@400;700&display=swap');
+
+    /* 전체 배경 */
+    .stApp {
+        background-color: #0f0d0a;
+        background-image:
+            radial-gradient(ellipse at top, #1a1208 0%, #0f0d0a 60%);
+    }
+
+    /* 제목 */
+    h1 {
+        font-family: 'Cinzel Decorative', serif !important;
+        color: #c9a84c !important;
+        text-shadow: 0 0 18px #7a5c1e88, 0 2px 4px #000;
+        letter-spacing: 0.05em;
+    }
+
+    /* 부제목 / caption */
+    .stCaption, .stCaption p {
+        font-family: 'Cinzel', serif !important;
+        color: #8a7040 !important;
+        letter-spacing: 0.04em;
+    }
+
+    /* 사이드바 */
+    section[data-testid="stSidebar"] {
+        background-color: #130f08 !important;
+        border-right: 1px solid #3a2c10;
+    }
+    section[data-testid="stSidebar"] * {
+        font-family: 'Cinzel', serif !important;
+        color: #c9a84c !important;
+    }
+
+    /* 채팅 입력창 */
+    .stChatInput textarea, .stChatInput input {
+        background-color: #1a1510 !important;
+        color: #e8d9b0 !important;
+        border: 1px solid #5a4420 !important;
+        border-radius: 6px !important;
+        font-family: 'Cinzel', serif !important;
+    }
+    .stChatInput textarea:focus, .stChatInput input:focus {
+        border-color: #c9a84c !important;
+        box-shadow: 0 0 8px #c9a84c44 !important;
+    }
+
+    /* 채팅 메시지 버블 */
+    .stChatMessage {
+        background-color: #1a1510 !important;
+        border: 1px solid #2e2210 !important;
+        border-radius: 8px !important;
+    }
+    .stChatMessage p, .stChatMessage li, .stChatMessage td {
+        font-family: 'Cinzel', serif !important;
+        color: #e8d9b0 !important;
+        line-height: 1.8 !important;
+    }
+    .stChatMessage strong {
+        color: #c9a84c !important;
+    }
+    .stChatMessage code {
+        background-color: #2a1f0e !important;
+        color: #f0c060 !important;
+        border: 1px solid #4a3520 !important;
+    }
+
+    /* 구분선 (---) */
+    hr {
+        border-color: #3a2c10 !important;
+    }
+
+    /* expander (추론 과정) */
+    .streamlit-expanderHeader {
+        font-family: 'Cinzel', serif !important;
+        color: #8a7040 !important;
+        background-color: #1a1510 !important;
+        border: 1px solid #3a2c10 !important;
+    }
+    .streamlit-expanderContent {
+        background-color: #130f08 !important;
+        border: 1px solid #2e2210 !important;
+        color: #7a6a48 !important;
+        font-size: 0.85em !important;
+    }
+
+    /* 스크롤바 */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0f0d0a; }
+    ::-webkit-scrollbar-thumb { background: #3a2c10; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #c9a84c; }
+    </style>
+    """, unsafe_allow_html=True)
+
+inject_theme()
+
 st.title("Warhammer Age of Sigmar AI 룰마스터")
 st.caption("공식 규칙 문서와 FAQ를 기반으로 답변하는 AI 심판입니다.")
 
@@ -170,22 +271,26 @@ include_patch = st.sidebar.checkbox(
     help="체크하면 rule_db 검색 시 rules_updates 문서도 포함합니다.",
 )
 
+AVATAR_USER      = "⚔️"   # 질문하는 플레이어
+AVATAR_ASSISTANT = "🏛️"   # AI 심판 (지그마의 서고)
+
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "assistant", "content": "안녕하세요! 워해머 규칙에 대해 무엇이든 물어보세요."}
     ]
 
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
+    avatar = AVATAR_ASSISTANT if msg["role"] == "assistant" else AVATAR_USER
+    with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
 
 if user_query := st.chat_input("질문을 입력하세요..."):
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar=AVATAR_USER):
         st.markdown(user_query)
     st.session_state.messages.append({"role": "user", "content": user_query})
 
     # 메인 UI 검색 로직 순서 수정
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=AVATAR_ASSISTANT):
         with st.spinner("지그마의 서고를 뒤적이는 중..."):
 
             # 1. 라우터: '사용자의 원본 질문'으로 의도를 파악하여 DB 결정
