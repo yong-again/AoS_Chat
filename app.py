@@ -1,9 +1,11 @@
+import json
 import streamlit as st
 import chromadb
 from sentence_transformers import SentenceTransformer
 from google import genai
 from google.genai import types
 from dotenv import dotenv_values
+from mathhammer import calculate_combat_damage
 
 st.set_page_config(page_title="Warhammer AI 룰마스터", page_icon="⚔️", layout="centered")
 
@@ -124,6 +126,51 @@ THINKING_BUDGET = {
     "spearhead_db": 4000,
     "other_db":     4000,
 }
+
+# ─── Mathhammer Tool 정의 ─────────────────────────────────────────────────────
+_S = types.Schema   # 편의용 별칭
+
+MATHHAMMER_TOOL = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="calculate_combat_damage",
+            description=(
+                "워해머 에이지 오브 지그마에서 유닛이 적에게 가하는 전투 기대 데미지를 계산합니다. "
+                "유닛의 무기 스탯(공격 횟수·명중·관통·렌드·데미지)과 전투 환경 변수를 입력받아 "
+                "평균 기대 데미지 및 확률 분포를 반환합니다. "
+                "사용자가 데미지, 기대값, 확률, 시뮬레이션, 얼마나 때리냐 등을 물으면 반드시 이 도구를 사용하세요."
+            ),
+            parameters=_S(
+                type=types.Type.OBJECT,
+                properties={
+                    "attacks":          _S(type=types.Type.STRING,  description="공격 횟수. 예: '2', 'D6', '2D3'"),
+                    "hit":              _S(type=types.Type.STRING,  description="명중 굴림. 예: '3+', '4+'"),
+                    "wound":            _S(type=types.Type.STRING,  description="관통 굴림. 예: '3+', '4+'"),
+                    "rend":             _S(type=types.Type.STRING,  description="렌드. 예: '-', '1', '2'"),
+                    "damage":           _S(type=types.Type.STRING,  description="데미지. 예: '1', 'D3', '2'"),
+                    "attacker_count":   _S(type=types.Type.INTEGER, description="공격하는 모델 수. 기본값 1"),
+                    "target_save":      _S(type=types.Type.STRING,  description="방어측 세이브. 예: '3+', '4+', '5+'"),
+                    "target_ward":      _S(type=types.Type.STRING,  description="방어측 와드 세이브 (없으면 생략). 예: '6+', '5+'"),
+                    "all_out_attack":   _S(type=types.Type.BOOLEAN, description="All-out Attack 지휘 능력 사용 여부 (명중 +1)"),
+                    "all_out_defence":  _S(type=types.Type.BOOLEAN, description="All-out Defence 지휘 능력 사용 여부 (세이브 +1)"),
+                    "charged":          _S(type=types.Type.BOOLEAN, description="대상(방어측)이 이번 턴 돌격했는지 여부 (Anti-charge 트리거)"),
+                    "crit_mortal":      _S(type=types.Type.BOOLEAN, description="Crit (Mortal) 무기 특성 보유 여부"),
+                    "anti_charge_rend": _S(type=types.Type.BOOLEAN, description="Anti-charge (+1 Rend) 무기 특성 보유 여부"),
+                    "use_monte_carlo":  _S(type=types.Type.BOOLEAN, description="True면 몬테카를로 시뮬레이션(10,000회), False면 기대값 공식"),
+                },
+                required=["attacks", "hit", "wound", "rend", "damage", "target_save"],
+            ),
+        )
+    ]
+)
+
+
+def _run_tool(fn_name: str, args: dict) -> dict:
+    """Gemini가 요청한 도구를 실행합니다."""
+    if fn_name == "calculate_combat_damage":
+        return calculate_combat_damage(**args)
+    return {"error": f"Unknown tool: {fn_name}"}
+
 
 # ─── 라우터 프롬프트 ──────────────────────────────────────────────────────────
 ROUTER_PROMPT = """
@@ -407,44 +454,118 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             else:
                 retrieved_context = "관련 문서를 찾을 수 없습니다."
 
-            # 5. 최종 답변 생성 (사용자의 원본 질문과 검색된 정확한 컨텍스트 사용)
-            # LLM이 한국어 질문과 영어 원문을 매칭할 수 있도록 search_query를 힌트로 줍니다.
-            user_prompt = (
-                f"[AI 검색 내비게이터 힌트: 사용자가 찾는 유닛의 영문 이름은 '{search_query}'와 일치할 확률이 높습니다.]\n\n"
+            # 5. 에이전틱 루프: RAG 컨텍스트 + Tool Use
+            user_prompt_text = (
+                f"[검색 키워드 힌트: '{search_query}']\n\n"
                 f"[참고 규칙]\n{retrieved_context}\n"
                 f"사용자 질문: {user_query}"
             )
-            
-            response = gemini_client.models.generate_content(
-                model=ANSWER_MODEL,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPTS[db_name],
-                    temperature=1.0,
-                    thinking_config=types.ThinkingConfig(
-                        thinking_budget=THINKING_BUDGET[db_name],
-                        include_thoughts=True,
-                    ),
+            contents = [
+                types.Content(role="user",
+                              parts=[types.Part.from_text(text=user_prompt_text)])
+            ]
+
+            gen_cfg = types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPTS[db_name],
+                temperature=1.0,
+                tools=[MATHHAMMER_TOOL],
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=THINKING_BUDGET[db_name],
+                    include_thoughts=True,
                 ),
             )
 
-        # thinking 파트와 answer 파트 분리
-        thinking_text = ""
-        answer_text = ""
-        for part in response.candidates[0].content.parts:
-            if hasattr(part, "thought") and part.thought:
-                thinking_text = part.text
-            else:
-                answer_text += part.text
+            all_thinking = []
+            tool_calls_log = []      # UI 표시용
+            MAX_TURNS = 5
 
-        db_label = DB_LABELS[db_name]
-        source_text = "\n".join(list(set(sources_info))) if sources_info else "참고할 문서가 없습니다."
-        footer = f"---\n검색한 DB: {db_label}  |  검색 키워드: `{search_query}`  |  참고 문서:\n{source_text}"
+            for _ in range(MAX_TURNS):
+                response = gemini_client.models.generate_content(
+                    model=ANSWER_MODEL,
+                    contents=contents,
+                    config=gen_cfg,
+                )
 
-        if thinking_text:
+                # thinking 파트 수집
+                for part in response.candidates[0].content.parts:
+                    if getattr(part, "thought", False):
+                        all_thinking.append(part.text)
+
+                # 함수 호출 파트 확인
+                fn_calls = [
+                    p for p in response.candidates[0].content.parts
+                    if p.function_call
+                ]
+                if not fn_calls:
+                    break   # 최종 답변 완성
+
+                # 함수 실행 및 결과 반환
+                contents.append(response.candidates[0].content)
+                fn_response_parts = []
+                for p in fn_calls:
+                    args   = dict(p.function_call.args)
+                    result = _run_tool(p.function_call.name, args)
+                    tool_calls_log.append({
+                        "name": p.function_call.name,
+                        "args": args,
+                        "result": result,
+                    })
+                    fn_response_parts.append(
+                        types.Part.from_function_response(
+                            name=p.function_call.name,
+                            response={"result": json.dumps(result, ensure_ascii=False)},
+                        )
+                    )
+                contents.append(
+                    types.Content(role="user", parts=fn_response_parts)
+                )
+
+        # ── UI 렌더링 ─────────────────────────────────────────────────────────
+        # 최종 answer 텍스트 추출 (thinking·function_call 파트 제외)
+        answer_text = "".join(
+            p.text
+            for p in response.candidates[0].content.parts
+            if not getattr(p, "thought", False) and not p.function_call
+        )
+
+        # 도구 실행 결과 표시
+        if tool_calls_log:
+            with st.expander("🎲 전투 계산 엔진 실행 결과", expanded=True):
+                for call in tool_calls_log:
+                    st.markdown(f"**도구:** `{call['name']}`")
+                    st.markdown("**입력 파라미터:**")
+                    st.json(call["args"])
+                    res = call["result"]
+                    st.markdown(f"**기대 데미지: `{res.get('expected_damage')}`**")
+                    if res.get("method") == "monte_carlo":
+                        pc = res.get("percentiles", {})
+                        cols = st.columns(3)
+                        cols[0].metric("10퍼센타일", pc.get("10th_percentile"))
+                        cols[1].metric("중앙값",    pc.get("median"))
+                        cols[2].metric("90퍼센타일", pc.get("90th_percentile"))
+                        st.caption(f"제로 데미지 확률: {res.get('prob_zero_damage')} | {res.get('iterations'):,}회 시뮬레이션")
+                    elif res.get("breakdown"):
+                        bd = res["breakdown"]
+                        st.caption(
+                            f"공격 {bd['total_attacks']} × "
+                            f"명중 {bd['p_hit']:.1%} × "
+                            f"관통 {bd['p_wound']:.1%} × "
+                            f"세이브 실패 {bd['p_fail_save']:.1%} × "
+                            f"와드 통과 {bd['p_no_ward']:.1%} × "
+                            f"데미지 {bd['avg_damage_per_unsaved_wound']}"
+                        )
+
+        # 추론 과정 표시
+        if all_thinking:
             with st.expander("💭 추론 과정 보기", expanded=False):
-                st.markdown(thinking_text)
+                st.markdown("\n\n---\n\n".join(all_thinking))
 
+        db_label   = DB_LABELS[db_name]
+        source_text = "\n".join(list(set(sources_info))) if sources_info else "참고할 문서가 없습니다."
+        footer = (
+            f"---\n검색한 DB: {db_label}  |  "
+            f"검색 키워드: `{search_query}`  |  참고 문서:\n{source_text}"
+        )
         response_text = f"{answer_text}\n\n{footer}"
         st.markdown(response_text)
         st.session_state.messages.append({"role": "assistant", "content": response_text})
