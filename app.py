@@ -14,6 +14,16 @@ ROUTER_MODEL = "gemini-2.5-flash-lite"
 ANSWER_MODEL = "gemini-2.5-flash"
 EMBED_MODEL  = "intfloat/multilingual-e5-base"
 
+# DB별 thinking 토큰 예산 (-1=동적, 0=비활성)
+# 룰 판단은 추론이 많이 필요, 단순 스탯 조회는 적게
+THINKING_BUDGET = {
+    "rule_db":      8000,
+    "faction_db":   2000,
+    "balance_db":   1000,
+    "spearhead_db": 4000,
+    "other_db":     4000,
+}
+
 # ─── 라우터 프롬프트 ──────────────────────────────────────────────────────────
 ROUTER_PROMPT = """
 사용자의 질문을 분석하여 아래 5개 카테고리 중 가장 적합한 것을 하나만 선택하세요.
@@ -305,15 +315,31 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 contents=user_prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPTS[db_name],
-                    temperature=0.2,
+                    temperature=1.0,
+                    thinking_config=types.ThinkingConfig(
+                        thinking_budget=THINKING_BUDGET[db_name],
+                        include_thoughts=True,
+                    ),
                 ),
             )
 
+        # thinking 파트와 answer 파트 분리
+        thinking_text = ""
+        answer_text = ""
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, "thought") and part.thought:
+                thinking_text = part.text
+            else:
+                answer_text += part.text
+
         db_label = DB_LABELS[db_name]
         source_text = "\n".join(list(set(sources_info))) if sources_info else "참고할 문서가 없습니다."
-        response_text = (
-            f"{response.text}\n\n"
-            f"---\n검색한 DB: {db_label}  |  검색 키워드: `{search_query}`  |  참고 문서:\n{source_text}"
-        )
+        footer = f"---\n검색한 DB: {db_label}  |  검색 키워드: `{search_query}`  |  참고 문서:\n{source_text}"
+
+        if thinking_text:
+            with st.expander("💭 추론 과정 보기", expanded=False):
+                st.markdown(thinking_text)
+
+        response_text = f"{answer_text}\n\n{footer}"
         st.markdown(response_text)
         st.session_state.messages.append({"role": "assistant", "content": response_text})
