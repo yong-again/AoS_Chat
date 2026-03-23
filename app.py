@@ -1,11 +1,73 @@
 import json
+import os
+from datetime import datetime
 import streamlit as st
 import chromadb
 from sentence_transformers import SentenceTransformer
 from google import genai
 from google.genai import types
 from dotenv import dotenv_values
-from mathhammer import calculate_combat_damage
+from tools import calculate_expected_damage
+
+# ─── 채팅 내역 저장 ───────────────────────────────────────────────────────────
+HISTORY_DIR = "chat_history"
+LOG_DIR = "chat_logs"
+os.makedirs(HISTORY_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
+
+def append_qa_log(session_id: str, user_msg: str, bot_msg: str, db_name: str, search_query: str) -> None:
+    """Q&A 한 쌍을 일별 로그 파일에 추가합니다."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    log_path = os.path.join(LOG_DIR, f"{today}.log")
+    now = datetime.now().strftime("%H:%M:%S")
+    separator = "─" * 60
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"[{now}] SESSION: {session_id}\n")
+        f.write(f"[{now}] USER: {user_msg}\n")
+        f.write(f"[{now}] DB: {db_name}  |  키워드: {search_query}\n")
+        f.write(f"[{now}] BOT: {bot_msg}\n")
+        f.write(f"{separator}\n")
+
+def _session_file(session_id: str) -> str:
+    return os.path.join(HISTORY_DIR, f"{session_id}.json")
+
+def save_chat_history(session_id: str, messages: list) -> None:
+    """현재 세션의 채팅 내역을 JSON 파일로 저장합니다."""
+    data = {
+        "session_id": session_id,
+        "saved_at": datetime.now().isoformat(),
+        "messages": messages,
+    }
+    with open(_session_file(session_id), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_chat_history(session_id: str) -> list:
+    """저장된 채팅 내역을 불러옵니다. 없으면 빈 리스트 반환."""
+    path = _session_file(session_id)
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f).get("messages", [])
+    return []
+
+def list_saved_sessions() -> list[dict]:
+    """저장된 세션 목록을 최신순으로 반환합니다."""
+    sessions = []
+    for fname in sorted(os.listdir(HISTORY_DIR), reverse=True):
+        if not fname.endswith(".json"):
+            continue
+        path = os.path.join(HISTORY_DIR, fname)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            sessions.append({
+                "session_id": data.get("session_id", fname[:-5]),
+                "saved_at": data.get("saved_at", ""),
+                "message_count": len(data.get("messages", [])),
+                "path": path,
+            })
+        except Exception:
+            continue
+    return sessions
 
 st.set_page_config(page_title="Warhammer AI 룰마스터", page_icon="⚔️", layout="centered")
 
@@ -127,61 +189,19 @@ THINKING_BUDGET = {
     "other_db":     4000,
 }
 
-# ─── Mathhammer Tool 정의 ─────────────────────────────────────────────────────
-_S = types.Schema   # 편의용 별칭
-
-MATHHAMMER_TOOL = types.Tool(
-    function_declarations=[
-        types.FunctionDeclaration(
-            name="calculate_combat_damage",
-            description=(
-                "워해머 에이지 오브 지그마에서 유닛이 적에게 가하는 전투 기대 데미지를 계산합니다. "
-                "유닛의 무기 스탯(공격 횟수·명중·관통·렌드·데미지)과 전투 환경 변수를 입력받아 "
-                "평균 기대 데미지 및 확률 분포를 반환합니다. "
-                "사용자가 데미지, 기대값, 확률, 시뮬레이션, 얼마나 때리냐 등을 물으면 반드시 이 도구를 사용하세요."
-            ),
-            parameters=_S(
-                type=types.Type.OBJECT,
-                properties={
-                    "attacks":          _S(type=types.Type.STRING,  description="공격 횟수. 예: '2', 'D6', '2D3'"),
-                    "hit":              _S(type=types.Type.STRING,  description="명중 굴림. 예: '3+', '4+'"),
-                    "wound":            _S(type=types.Type.STRING,  description="관통 굴림. 예: '3+', '4+'"),
-                    "rend":             _S(type=types.Type.STRING,  description="렌드. 예: '-', '1', '2'"),
-                    "damage":           _S(type=types.Type.STRING,  description="데미지. 예: '1', 'D3', '2'"),
-                    "attacker_count":   _S(type=types.Type.INTEGER, description="공격하는 모델 수. 기본값 1"),
-                    "target_save":      _S(type=types.Type.STRING,  description="방어측 세이브. 예: '3+', '4+', '5+'"),
-                    "target_ward":      _S(type=types.Type.STRING,  description="방어측 와드 세이브 (없으면 생략). 예: '6+', '5+'"),
-                    "all_out_attack":   _S(type=types.Type.BOOLEAN, description="All-out Attack 지휘 능력 사용 여부 (명중 +1)"),
-                    "all_out_defence":  _S(type=types.Type.BOOLEAN, description="All-out Defence 지휘 능력 사용 여부 (세이브 +1)"),
-                    "charged":          _S(type=types.Type.BOOLEAN, description="대상(방어측)이 이번 턴 돌격했는지 여부 (Anti-charge 트리거)"),
-                    "crit_mortal":      _S(type=types.Type.BOOLEAN, description="Crit (Mortal) 무기 특성 보유 여부"),
-                    "anti_charge_rend": _S(type=types.Type.BOOLEAN, description="Anti-charge (+1 Rend) 무기 특성 보유 여부"),
-                    "use_monte_carlo":  _S(type=types.Type.BOOLEAN, description="True면 몬테카를로 시뮬레이션(10,000회), False면 기대값 공식"),
-                },
-                required=["attacks", "hit", "wound", "rend", "damage", "target_save"],
-            ),
-        )
-    ]
-)
-
-
-def _run_tool(fn_name: str, args: dict) -> dict:
-    """Gemini가 요청한 도구를 실행합니다."""
-    if fn_name == "calculate_combat_damage":
-        return calculate_combat_damage(**args)
-    return {"error": f"Unknown tool: {fn_name}"}
 
 
 # ─── 라우터 프롬프트 ──────────────────────────────────────────────────────────
 ROUTER_PROMPT = """
 사용자의 질문을 분석하여 아래 5개 카테고리 중 가장 적합한 것을 하나만 선택하세요.
 - 질문에 포인트, 점수, 비용, points, 부대 편성 등의 단어가 있으면 무조건 balance_db 를 선택하세요.
+- 질문에 "스피어헤드"라는 단어가 있거나, 스피어헤드 고유 명칭(예: Grundstok Trailblazers, Yndrasta's Spearhead, Ironjawz Waaagh!, Dawnbringers 등 팩션명+Spearhead 형태 또는 스피어헤드 세트 이름)이 포함되어 있으면 무조건 spearhead_db를 선택하세요.
 - 반드시 카테고리 이름(영문, 예: rule_db)만 출력하고 다른 텍스트는 절대 포함하지 마세요.
 
 rule_db      : 코어 룰, 턴 진행 순서, 일반적인 게임 메커니즘 (이동, 슈팅, 전투, 마법, 차지 등)
 faction_db   : 특정 유닛의 스탯, 무기, 팩션 고유 능력, 워스크롤
 balance_db   : 유닛의 포인트 가격, 부대 편성 제한, 레지먼트
-spearhead_db : 스피어헤드 모드 전용 룰 및 뱅가드 유닛 정보
+spearhead_db : 스피어헤드 모드 전용 룰, 스피어헤드 세트 구성(warscrolls), 스피어헤드 고유 규칙(spearhead_rules)
 other_db     : 특수 캠페인 룰 (예: 기란의 재앙)
 
 사용자 질문: {query}"""
@@ -208,8 +228,11 @@ SYSTEM_PROMPTS = {
     "rule_db": (
         "당신은 워해머 에이지 오브 지그마의 공인 심판입니다. "
         "제공된 코어 룰 문서를 바탕으로 정확하게 한국어로 답변하세요. "
-        "[경고]: 제공된 문서에 질문과 직접적으로 관련된 내용이 없다면 절대 기존 지식으로 지어내거나 엉뚱한 룰을 설명하지 마세요. "
-        "대신 '제공된 문서에서 해당 정보를 찾을 수 없습니다. 원하시는 정확한 규칙 이름이나 키워드를 다시 말씀해 주시겠어요?'와 같이 정중하게 되물어보세요."
+        "[절대 금지]: 제공된 문서에 질문과 직접 일치하는 내용이 없다면 다음 행동을 하지 마세요: "
+        "(1) 기존 지식이나 외부 설정으로 답변 생성, "
+        "(2) 유사한 룰을 찾아 유추하거나 비유하는 설명, "
+        "(3) '~와 비슷하다', '~로 볼 수 있다'와 같은 간접 추론. "
+        "문서에 없으면 반드시 '제공된 문서에서 해당 정보를 찾을 수 없습니다. 정확한 규칙 이름이나 키워드를 다시 알려주시겠어요?'라고만 답하세요."
     ),
     "faction_db": (
         "당신은 워해머 에이지 오브 지그마의 팩션 전문가입니다. "
@@ -219,7 +242,8 @@ SYSTEM_PROMPTS = {
         "   데이터 출처가 스피어헤드인 경우 '이 정보는 스피어헤드 데이터 기준입니다'라고 명시하세요. "
         "▶ 팩션 유닛 목록/종류 질문: JSON 데이터에 있는 모든 유닛의 unit_name을 목록으로 나열하세요. "
         "   단, type이 'warscroll'인 항목만 유닛으로 취급하고, 능력/주문/룰은 유닛이 아닙니다. "
-        "[경고]: 제공된 JSON 데이터에 warscroll 타입 항목이 없을 때만 '찾지 못했습니다'라고 하세요."
+        "[절대 금지]: 제공된 JSON에 없는 유닛을 유추하거나, 다른 팩션 데이터로 대답하거나, 외부 지식으로 정보를 보충하지 마세요. "
+        "제공된 JSON 데이터에 warscroll 타입 항목이 없을 때만 '찾지 못했습니다'라고 하세요."
     ),
     "balance_db": (
         "당신은 워해머 에이지 오브 지그마의 포인트 및 편성 전문가입니다. "
@@ -229,13 +253,29 @@ SYSTEM_PROMPTS = {
     ),
     "spearhead_db": (
         "당신은 워해머 에이지 오브 지그마 스피어헤드 모드 전문가입니다. "
-        "제공된 스피어헤드 규칙을 바탕으로 한국어로 답변하세요. "
-        "[경고]: 제공된 문서에 없다면 절대 지어내지 말고, '정확한 정보를 위해 다른 키워드나 영문 명칭을 알려주시겠어요?'라고 되물어보세요."
+        "제공된 스피어헤드 JSON 데이터와 출처 파일명을 모두 활용하여 한국어로 답변하세요. "
+        "▶ 팩션의 스피어헤드 종류 질문: 다음 우선순위로 스피어헤드 목록을 구성하세요. "
+        "   (1순위) JSON 본문에 spearhead_name 필드가 있으면 그 값을 사용하세요. "
+        "   (2순위) spearhead_name이 없으면 출처 파일명에서 이름을 추출하세요. "
+        "           파일명 구조: spearhead_팩션명_-_스피어헤드명.json "
+        "           예: spearhead_kharadron_overlords_-_grundstok_trailblazers.json → Grundstok Trailblazers "
+        "           '_-_' 뒤쪽 부분을 추출하고 언더스코어를 공백으로, 단어 첫 글자를 대문자로 변환하세요. "
+        "   (3순위) 파일명도 없으면 JSON 데이터의 최상위 키 이름을 스피어헤드 이름으로 간주하세요. "
+        "▶ 특정 스피어헤드 정보 질문: 아래 세 항목을 모두 정리해서 답변하세요. "
+        "   (1) 스피어헤드 이름과 주요 특징 및 고유 규칙(spearhead_rules). "
+        "   (2) 포함된 유닛 목록: type이 'warscroll'인 항목의 unit_name을 모두 나열하세요. "
+        "   (3) 각 유닛의 간략한 역할(abilities 요약)을 함께 제공하세요. "
+        "▶ 스피어헤드 유닛 단독 질문: type이 'warscroll'인 항목의 unit_name을 모두 나열하세요. "
+        "[주의]: JSON 본문, 출처 파일명, 메타데이터를 최대한 조합하여 답변을 시도하세요. "
+        "세 가지 수단을 모두 써도 도저히 관련 정보를 찾을 수 없을 때만 "
+        "'정확한 정보를 위해 스피어헤드 이름이나 팩션명을 영문으로 알려주시겠어요?'라고 되물어보세요. "
+        "[절대 금지]: 일반 매치드 플레이 데이터나 외부 지식으로 스피어헤드 정보를 대체하지 마세요."
     ),
     "other_db": (
         "당신은 워해머 에이지 오브 지그마 특수 캠페인 규칙 전문가입니다. "
         "제공된 문서를 바탕으로 캠페인 전용 규칙을 한국어로 정확히 설명하세요. "
-        "[경고]: 내용이 없다면 지어내지 말고, 확인을 위해 사용자에게 키워드를 다시 물어보세요."
+        "[절대 금지]: 문서에 없는 내용을 유추하거나 외부 지식으로 보충하지 마세요. "
+        "내용이 없다면 지어내지 말고, '제공된 문서에서 찾을 수 없습니다. 키워드를 다시 알려주시겠어요?'라고 답하세요."
     ),
 }
 
@@ -260,8 +300,10 @@ def generate_search_query(query: str, db_name: str, client) -> str:
     extraction_prompt = f'''
     사용자의 워해머 에이지 오브 지그마 질문에서 벡터 DB 검색에 쓸 영어 키워드를 추출하세요.
     ⚠️[주의]: 아래 규칙을 반드시 따르세요.
-    1. 특정 유닛을 묻는 경우: 유닛 전체 영어 이름만 출력하세요. 팩션 이름은 포함하지 마세요.
-    2. 팩션 전체 유닛 목록/종류를 묻는 경우: 팩션의 정확한 영어 워스크롤 키워드를 출력하세요.
+    1. 특정 스피어헤드 이름을 묻는 경우: 팩션 이름을 제외하고 스피어헤드의 정확한 영어 고유명만 출력하세요.
+    2. 팩션의 스피어헤드 종류/목록을 묻는 경우: 팩션의 정확한 영어 키워드를 출력하세요.
+    3. 특정 유닛을 묻는 경우: 유닛 전체 영어 이름만 출력하세요. 팩션 이름은 포함하지 마세요.
+    4. 팩션 전체 유닛 목록/종류를 묻는 경우: 팩션의 정확한 영어 워스크롤 키워드를 출력하세요.
        - 루미네스 렐름 로드 → LUMINETH REALM-LORDS
        - 스톰캐스트 이터널스 → STORMCAST ETERNALS
        - 나이트헌트 → NIGHTHAUNT
@@ -274,13 +316,18 @@ def generate_search_query(query: str, db_name: str, client) -> str:
        - 세라폰 → SERAPHON
        - 실바네스 → SYLVANETH
        - 카인의 딸들 → DAUGHTERS OF KHAINE
-    3. 한국어 서술어는 모두 제거하세요.
+       - 카하드론 오버로드 → KHARADRON OVERLORDS
+       - 아이언조즈 → IRONJAWZ
+       - 오러크스 앤 고블린스 → ORRUK WARCLANS
+    5. 한국어 서술어는 모두 제거하세요.
 
+    예시: grundstok trailblazers에 대해 알고 싶어 -> Grundstok Trailblazers
+    예시: 카하드론 그런드스탁 트레일블레이저스 정보 -> Grundstok Trailblazers
+    예시: 인드라스타의 스피어헤드 규칙 -> Yndrasta's Spearhead
+    예시: 카하드론 오버로드 스피어헤드 목록 -> KHARADRON OVERLORDS
+    예시: 스톰캐스트 스피어헤드 종류 -> STORMCAST ETERNALS
     예시: 루미네스 보병 워든 스탯 -> Vanari Auralan Wardens
-    예시: 루미네스 렐름 로드의 워든 정보 -> Vanari Auralan Wardens
-    예시: 젠취의 카이로스 페이트위버 마법 -> Kairos Fateweaver
     예시: 루미네스 렐름의 유닛들 목록 -> LUMINETH REALM-LORDS
-    예시: 루미네스 렐름 로드 유닛 종류 -> LUMINETH REALM-LORDS
     예시: 스톰캐스트 이터널스 팩션 유닛 목록 -> STORMCAST ETERNALS
 
     질문: {query}
@@ -311,6 +358,15 @@ def route_query(query: str, client) -> str:
 # ─── UI ──────────────────────────────────────────────────────────────────────
 gemini_client, embed_model, collections = load_resources()
 
+# session_state 초기화 (사이드바보다 먼저 실행되어야 함)
+if "session_id" not in st.session_state:
+    st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant", "content": "안녕하세요! 워해머 규칙에 대해 무엇이든 물어보세요."}
+    ]
+
 st.sidebar.title("검색 설정")
 include_patch = st.sidebar.checkbox(
     "최신 패치 내역 포함 (FAQ/Errata)",
@@ -318,13 +374,77 @@ include_patch = st.sidebar.checkbox(
     help="체크하면 rule_db 검색 시 rules_updates 문서도 포함합니다.",
 )
 
-AVATAR_USER      = "⚔️"   # 질문하는 플레이어
-AVATAR_ASSISTANT = "🏛️"   # AI 심판 (지그마의 서고)
+# ─── 채팅 내역 관리 사이드바 ─────────────────────────────────────────────────
+st.sidebar.divider()
+st.sidebar.subheader("💾 채팅 내역")
 
-if "messages" not in st.session_state:
+# 현재 세션 다운로드
+current_history_json = json.dumps(
+    {
+        "session_id": st.session_state.session_id,
+        "saved_at": datetime.now().isoformat(),
+        "messages": st.session_state.messages,
+    },
+    ensure_ascii=False,
+    indent=2,
+)
+st.sidebar.download_button(
+    label="현재 세션 다운로드 (JSON)",
+    data=current_history_json,
+    file_name=f"chat_{st.session_state.session_id}.json",
+    mime="application/json",
+)
+
+# 새 대화 시작
+if st.sidebar.button("새 대화 시작"):
+    save_chat_history(st.session_state.session_id, st.session_state.messages)
+    st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     st.session_state.messages = [
         {"role": "assistant", "content": "안녕하세요! 워해머 규칙에 대해 무엇이든 물어보세요."}
     ]
+    st.rerun()
+
+# 저장된 이전 세션 목록
+saved = list_saved_sessions()
+if saved:
+    st.sidebar.caption(f"저장된 세션: {len(saved)}개")
+    session_options = {
+        f"{s['saved_at'][:16].replace('T', ' ')} ({s['message_count']}개)": s
+        for s in saved
+    }
+    selected_label = st.sidebar.selectbox(
+        "이전 세션 불러오기",
+        options=["(선택)"] + list(session_options.keys()),
+        key="session_select",
+    )
+    if selected_label != "(선택)":
+        selected = session_options[selected_label]
+        if st.sidebar.button("불러오기"):
+            save_chat_history(st.session_state.session_id, st.session_state.messages)
+            st.session_state.session_id = selected["session_id"]
+            st.session_state.messages = load_chat_history(selected["session_id"])
+            st.rerun()
+
+# ─── 개발자 로그 뷰어 ────────────────────────────────────────────────────────
+st.sidebar.divider()
+log_expander = st.sidebar.expander("🛠️ 개발자 로그 보기")
+with log_expander:
+    today = datetime.now().strftime("%Y-%m-%d")
+    log_path = os.path.join(LOG_DIR, f"{today}.log")
+    n_entries = st.sidebar.number_input("최근 대화 수", min_value=1, max_value=50, value=5, step=1)
+    if st.sidebar.button("🔄 새로고침", key="log_refresh"):
+        st.rerun()
+    if os.path.exists(log_path):
+        with open(log_path, "r", encoding="utf-8") as f:
+            raw = f.read()
+        entries = [e.strip() for e in raw.split("─" * 60) if e.strip()]
+        recent = entries[-n_entries:]
+        st.code("\n\n".join(recent), language=None)
+    else:
+        st.caption("오늘 기록된 로그가 없습니다.")
+
+AVATAR_USER      = "⚔️"   # 질문하는 플레이어
+AVATAR_ASSISTANT = "🏛️"   # AI 심판 (지그마의 서고)
 
 for msg in st.session_state.messages:
     avatar = AVATAR_ASSISTANT if msg["role"] == "assistant" else AVATAR_USER
@@ -395,13 +515,26 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             flat_docs = results["documents"][0] if results["ids"] and results["ids"][0] else []
             if search_query and not _keyword_hit(flat_docs, search_query):
                 try:
-                    warscroll_only = db_name == "faction_db"
+                    warscroll_only = db_name in ("faction_db", "spearhead_db")
                     fallback = _fallback_search(collection, search_query,
                                                 limit=30 if warscroll_only else 5,
                                                 warscroll_only=warscroll_only)
                     if fallback["ids"]:
                         results["documents"][0] = fallback["documents"] + flat_docs
                         results["metadatas"][0] = fallback["metadatas"] + results["metadatas"][0]
+                        flat_docs = results["documents"][0]
+                except Exception:
+                    pass
+
+            # spearhead_db에서 못 찾으면 faction_db에서도 크로스 검색 (반대 방향)
+            if db_name == "spearhead_db" and search_query and not _keyword_hit(flat_docs, search_query):
+                try:
+                    faction_col = collections["faction_db"]
+                    fc_fallback = _fallback_search(faction_col, search_query,
+                                                   limit=20, warscroll_only=True)
+                    if fc_fallback["ids"]:
+                        results["documents"][0] = fc_fallback["documents"] + flat_docs
+                        results["metadatas"][0] = fc_fallback["metadatas"] + results["metadatas"][0]
                         flat_docs = results["documents"][0]
                 except Exception:
                     pass
@@ -468,7 +601,7 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             gen_cfg = types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPTS[db_name],
                 temperature=1.0,
-                tools=[MATHHAMMER_TOOL],
+                tools=[calculate_expected_damage],
                 thinking_config=types.ThinkingConfig(
                     thinking_budget=THINKING_BUDGET[db_name],
                     include_thoughts=True,
@@ -504,7 +637,7 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 fn_response_parts = []
                 for p in fn_calls:
                     args   = dict(p.function_call.args)
-                    result = _run_tool(p.function_call.name, args)
+                    result = calculate_expected_damage(**args)
                     tool_calls_log.append({
                         "name": p.function_call.name,
                         "args": args,
@@ -513,7 +646,7 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                     fn_response_parts.append(
                         types.Part.from_function_response(
                             name=p.function_call.name,
-                            response={"result": json.dumps(result, ensure_ascii=False)},
+                            response={"result": result},
                         )
                     )
                 contents.append(
@@ -532,40 +665,26 @@ if user_query := st.chat_input("질문을 입력하세요..."):
         if tool_calls_log:
             with st.expander("🎲 전투 계산 엔진 실행 결과", expanded=True):
                 for call in tool_calls_log:
-                    st.markdown(f"**도구:** `{call['name']}`")
-                    st.markdown("**입력 파라미터:**")
+                    st.caption(f"도구: {call['name']}")
                     st.json(call["args"])
-                    res = call["result"]
-                    st.markdown(f"**기대 데미지: `{res.get('expected_damage')}`**")
-                    if res.get("method") == "monte_carlo":
-                        pc = res.get("percentiles", {})
-                        cols = st.columns(3)
-                        cols[0].metric("10퍼센타일", pc.get("10th_percentile"))
-                        cols[1].metric("중앙값",    pc.get("median"))
-                        cols[2].metric("90퍼센타일", pc.get("90th_percentile"))
-                        st.caption(f"제로 데미지 확률: {res.get('prob_zero_damage')} | {res.get('iterations'):,}회 시뮬레이션")
-                    elif res.get("breakdown"):
-                        bd = res["breakdown"]
-                        st.caption(
-                            f"공격 {bd['total_attacks']} × "
-                            f"명중 {bd['p_hit']:.1%} × "
-                            f"관통 {bd['p_wound']:.1%} × "
-                            f"세이브 실패 {bd['p_fail_save']:.1%} × "
-                            f"와드 통과 {bd['p_no_ward']:.1%} × "
-                            f"데미지 {bd['avg_damage_per_unsaved_wound']}"
-                        )
+                    st.code(call["result"], language=None)
 
         # 추론 과정 표시
         if all_thinking:
             with st.expander("💭 추론 과정 보기", expanded=False):
                 st.markdown("\n\n---\n\n".join(all_thinking))
 
-        db_label   = DB_LABELS[db_name]
-        source_text = "\n".join(list(set(sources_info))) if sources_info else "참고할 문서가 없습니다."
+        db_label = DB_LABELS[db_name]
+        unique_sources = list(dict.fromkeys(s.lstrip("- ") for s in sources_info))
+        shown = unique_sources[:3]
+        source_text = ", ".join(f"`{s}`" for s in shown)
+        if len(unique_sources) > 3:
+            source_text += f" 외 {len(unique_sources) - 3}건"
         footer = (
-            f"---\n검색한 DB: {db_label}  |  "
-            f"검색 키워드: `{search_query}`  |  참고 문서:\n{source_text}"
+            f"---\n{db_label}  |  `{search_query}`  |  {source_text}"
         )
         response_text = f"{answer_text}\n\n{footer}"
         st.markdown(response_text)
         st.session_state.messages.append({"role": "assistant", "content": response_text})
+        save_chat_history(st.session_state.session_id, st.session_state.messages)
+        append_qa_log(st.session_state.session_id, user_query, answer_text, db_name, search_query)

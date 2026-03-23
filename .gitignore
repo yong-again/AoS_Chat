@@ -15,12 +15,17 @@ __pycache__/
 logs/
 *.log
 
+# Chat history & logs (runtime data)
+chat_history/
+chat_logs/
+
 # Outputs / generated data
 outputs/
 data.json
 *.pdf
 *.tmp
 *.cache
+debug_output/
 
 # DB dump folders (generated JSON from pipeline)
 *_db/
