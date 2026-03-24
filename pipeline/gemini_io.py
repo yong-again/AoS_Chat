@@ -9,11 +9,12 @@ import json
 import tempfile
 import time
 from json import JSONDecodeError
-from typing import Any
+from typing import Any, Type
 
 import requests
 from google import genai
 from google.genai import types
+from pydantic import BaseModel, ValidationError
 from pypdf import PdfReader, PdfWriter
 
 from core import config as cfg
@@ -130,8 +131,17 @@ def upload_pdf_to_gemini(client: genai.Client, pdf_bytes: bytes) -> types.File:
     return uploaded
 
 
-def extract_json_with_gemini(client: genai.Client, file: types.File, prompt: str) -> dict:
-    """Gemini로 PDF + 프롬프트 전달 후 JSON 파싱된 dict 반환."""
+def extract_json_with_gemini(
+    client: genai.Client,
+    file: types.File,
+    prompt: str,
+    schema_cls: Type[BaseModel],
+) -> dict:
+    """Gemini로 PDF + 프롬프트 전달 후 Pydantic 스키마로 검증된 dict 반환.
+
+    response_schema에 Pydantic 모델을 전달해 Structured Output을 적용합니다.
+    응답은 schema_cls.model_validate_json() 후 .model_dump()로 변환됩니다.
+    """
 
     def _once() -> dict:
         response = client.models.generate_content(
@@ -139,15 +149,16 @@ def extract_json_with_gemini(client: genai.Client, file: types.File, prompt: str
             contents=[file, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type=cfg.GEMINI_JSON_MIME,
+                response_schema=schema_cls,
                 temperature=cfg.GEMINI_TEMPERATURE,
             ),
         )
-        return json.loads(response.text)
+        return schema_cls.model_validate_json(response.text).model_dump()
 
     def _retry_if(exc: Exception) -> bool:
         if is_retryable_status(extract_status_code(exc)):
             return True
-        if isinstance(exc, JSONDecodeError):
+        if isinstance(exc, (JSONDecodeError, ValidationError)):
             return True
         return False
 

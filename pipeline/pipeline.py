@@ -8,6 +8,7 @@
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import dotenv_values
 from google import genai
@@ -17,7 +18,7 @@ from core.logging_config import get_logger, setup_logging
 from core.utils import build_output_path, save_json
 from pipeline.checkpoint import ask_resume, filter_pending, find_completed, print_checkpoint_status
 from pipeline.classifier import build_db_tasks, print_db_tasks_summary
-from pipeline.notifier import notify_pipeline_result
+from pipeline.notifier import notify_pipeline_progress, notify_pipeline_result
 from pipeline.gemini_io import (
     delete_gemini_file,
     download_pdf,
@@ -35,27 +36,67 @@ log = get_logger(__name__)
 
 
 def save_parsed_json(
-    parsed: dict,
-    db_target: str,
-    doc_name: str,
-    out_dir: str = ".",
+        parsed: dict,
+        db_target: str,
+        doc_name: str,
+        out_dir: str = ".",
 ) -> list[str]:
-    """파싱 결과를 JSON 파일로 저장. 분리 저장된 파일들의 경로 리스트 반환."""
+    """파싱 결과를 JSON 파일로 저장. 분리 저장된 파일들의 경로 리스트 반환.
+
+    BalanceResult / OtherResult는 Pydantic 래퍼 필드를 unwrap하여 기존 포맷(배열)으로 저장합니다.
+    - balance_db: {"units": [...]} → [...]
+    - other_db:   {"entries": [...]} → [...]
+    """
     saved_paths = []
 
-    # 팩션 팩의 경우 본편과 스피어헤드를 물리적으로 분리
-    if db_target == "faction_db" and isinstance(parsed, dict) and "aos_matched_play" in parsed and "spearhead" in parsed:
-        # 본편 저장
-        path_faction = build_output_path(db_target="faction_db", doc_name=doc_name, outputs_dir=out_dir)
-        save_json(path_faction, parsed["aos_matched_play"])
-        saved_paths.append(str(path_faction))
+    # 팩션 팩: 스피어헤드 유무에 따라 분기
+    if db_target == "faction_db":
+        spearhead_data = parsed.get("spearhead") or {}
+        has_spearhead = bool(
+            spearhead_data.get("spearhead_name")
+            or spearhead_data.get("warscrolls")
+            or spearhead_data.get("spearhead_rules")
+        )
 
-        # 스피어헤드 저장
-        path_spearhead = build_output_path(db_target="spearhead_db", doc_name=doc_name, outputs_dir=out_dir)
-        save_json(path_spearhead, parsed["spearhead"])
-        saved_paths.append(str(path_spearhead))
+        if has_spearhead:
+            # 스피어헤드 있음: faction_db에는 본편만, spearhead_db에는 스피어헤드만 분리 저장
+            path_faction = build_output_path(db_target="faction_db", doc_name=doc_name, outputs_dir=out_dir)
+            save_json(path_faction, parsed["aos_matched_play"])
+            saved_paths.append(str(path_faction))
+
+            # 팩션 이름 추출 (예: "Faction Pack: Lumineth Realm-lords" → "Lumineth Realm-lords")
+            faction_name = doc_name.replace("Faction Pack:", "").replace("Faction Pack", "").strip()
+
+            raw_name = spearhead_data.get("spearhead_name")
+            clean_name = str(raw_name).strip() if raw_name is not None else ""
+            if not clean_name or clean_name.lower() in ["none", "null", "unknown", ""]:
+                spearhead_name = "unknown"
+            else:
+                spearhead_name = clean_name
+
+            spearhead_doc_name = f"spearhead_{faction_name}_-_{spearhead_name}"
+            path_spearhead = build_output_path(db_target="spearhead_db", doc_name=spearhead_doc_name, outputs_dir=out_dir)
+            save_json(path_spearhead, spearhead_data)
+            saved_paths.append(str(path_spearhead))
+        else:
+            # 스피어헤드 없음: faction_db에만 저장
+            path_faction = build_output_path(db_target="faction_db", doc_name=doc_name, outputs_dir=out_dir)
+            save_json(path_faction, parsed["aos_matched_play"])
+            saved_paths.append(str(path_faction))
+
+    # balance_db: BalanceResult 래퍼 unwrap → 배열로 저장
+    elif db_target == "balance_db" and "units" in parsed:
+        path = build_output_path(db_target=db_target, doc_name=doc_name, outputs_dir=out_dir)
+        save_json(path, parsed["units"])
+        saved_paths.append(str(path))
+
+    # other_db: OtherResult 래퍼 unwrap → 배열로 저장
+    elif db_target == "other_db" and "entries" in parsed:
+        path = build_output_path(db_target=db_target, doc_name=doc_name, outputs_dir=out_dir)
+        save_json(path, parsed["entries"])
+        saved_paths.append(str(path))
+
     else:
-        # 일반 문서 저장
         path = build_output_path(db_target=db_target, doc_name=doc_name, outputs_dir=out_dir)
         save_json(path, parsed)
         saved_paths.append(str(path))
@@ -107,58 +148,87 @@ def process_aos_pipeline(
 
     total = len(all_tasks)
     log.info("=" * 60)
-    log.info("파싱 시작: %d개 문서 (전체 %d개)", total, total_all)
+    log.info("파싱 시작: %d개 문서 (전체 %d개, workers=%d)", total, total_all, cfg.PIPELINE_MAX_WORKERS)
     log.info("=" * 60)
 
     errors: list[str] = []
+    bot_token = config.get("TELEGRAM_BOT_TOKEN", "")
+    NOTIFY_INTERVAL = 10  # N개 완료마다 진행 상황 알림
+    start_time = time.time()
 
-    for idx, (db_target, task) in enumerate(all_tasks, start=1):
+    def _process_single(db_target: str, task: dict) -> list[str]:
+        """단일 문서를 처리하고 저장된 파일 경로를 반환 (워커 스레드에서 실행)."""
         doc_name = task["name"]
         url = task["url"]
         prompt = task["prompt"]
+        schema_cls = task["schema"]
 
-        log.info("[%d/%d] (%s) %s", idx, total, db_target, doc_name)
+        log.debug("  → PDF 다운로드 중: %s", url)
+        pdf_bytes = download_pdf(url)
 
-        try:
-            log.debug("  → PDF 다운로드 중: %s", url)
-            pdf_bytes = download_pdf(url)
+        chunk_size = cfg.CHUNK_SIZES.get(db_target, 8)
+        chunks = split_pdf_bytes(pdf_bytes, chunk_size)
+        total_chunks = len(chunks)
 
-            chunk_size = cfg.CHUNK_SIZES.get(db_target, 8)
-            chunks = split_pdf_bytes(pdf_bytes, chunk_size)
-            total_chunks = len(chunks)
+        if total_chunks > 1:
+            log.info("  [%s] 청킹 파싱: %d페이지 단위 / 총 %d청크", doc_name, chunk_size, total_chunks)
 
-            if total_chunks > 1:
-                log.info("  → 청킹 파싱: %d페이지 단위 / 총 %d청크", chunk_size, total_chunks)
+        chunk_results = []
+        for c_idx, chunk_bytes in enumerate(chunks, start=1):
+            log.debug("  [%s] 청크 [%d/%d] Gemini 업로드 중", doc_name, c_idx, total_chunks)
+            aos_file = upload_pdf_to_gemini(client, chunk_bytes)
+            log.debug("  [%s] 청크 [%d/%d] JSON 추출 중", doc_name, c_idx, total_chunks)
+            parsed_chunk = extract_json_with_gemini(client, aos_file, prompt, schema_cls)
+            delete_gemini_file(client, aos_file.name)
+            chunk_results.append(parsed_chunk)
+            time.sleep(cfg.API_DELAY_SECONDS)
 
-            chunk_results = []
-            for c_idx, chunk_bytes in enumerate(chunks, start=1):
-                if total_chunks > 1:
-                    log.debug("  → 청크 [%d/%d] Gemini 업로드 중", c_idx, total_chunks)
-                else:
-                    log.debug("  → Gemini 업로드 중")
+        parsed = merge_chunk_results(chunk_results)
+        return save_parsed_json(parsed, db_target, doc_name, output_dir)
 
-                aos_file = upload_pdf_to_gemini(client, chunk_bytes)
-                log.debug("  → 청크 [%d/%d] JSON 추출 중", c_idx, total_chunks)
-                parsed_chunk = extract_json_with_gemini(client, aos_file, prompt)
-                client.files.delete(name=aos_file.name)
-                chunk_results.append(parsed_chunk)
-                time.sleep(cfg.API_DELAY_SECONDS)
+    # ── 병렬 처리 (ThreadPoolExecutor) ──────────────────────────────────────
+    with ThreadPoolExecutor(max_workers=cfg.PIPELINE_MAX_WORKERS) as executor:
+        future_to_task = {
+            executor.submit(_process_single, db_target, task): (idx, db_target, task)
+            for idx, (db_target, task) in enumerate(all_tasks, start=1)
+        }
 
-            parsed = merge_chunk_results(chunk_results)
+        completed_count = 0
+        for future in as_completed(future_to_task):
+            idx, db_target, task = future_to_task[future]
+            doc_name = task["name"]
+            completed_count += 1
 
-            paths = save_parsed_json(parsed, db_target, doc_name, output_dir)
-            for p in paths:
-                log.info("  ✓ 저장: %s", p)
+            try:
+                paths = future.result()
+                for p in paths:
+                    log.info("[%d/%d] ✓ (%s) %s → %s", completed_count, total, db_target, doc_name, p)
+            except Exception as e:
+                msg = f"({db_target}) {doc_name}"
+                errors.append(msg)
+                log.error("[%d/%d] ✗ 에러: %s", completed_count, total, msg)
+                log.exception("    원인: %s", e)
 
-        except Exception as e:
-            msg = f"[{idx}/{total}] {db_target} / {doc_name}"
-            errors.append(msg)
-            log.error("  ✗ 에러 발생 (%s)", msg)
-            log.exception("    원인: %s", e)
+            # 진행 상황 알림 (N개 단위)
+            if completed_count % NOTIFY_INTERVAL == 0:
+                elapsed = time.time() - start_time
+                notify_pipeline_progress(
+                    bot_token,
+                    current=completed_count,
+                    total=total,
+                    success=completed_count - len(errors),
+                    errors=errors,
+                    elapsed_sec=elapsed,
+                )
+                log.info("  → 진행 알림 전송 (%d/%d)", completed_count, total)
+    # ────────────────────────────────────────────────────────────────────────
 
     # 최종 요약
+    elapsed_total = time.time() - start_time
+    success_count = total - len(errors)
+    elapsed_str = f"{int(elapsed_total // 60)}분 {int(elapsed_total % 60)}초"
     log.info("=" * 60)
-    log.info("파싱 완료: 성공 %d개 / 실패 %d개 / 전체 %d개", total - len(errors), len(errors), total)
+    log.info("파싱 완료: 성공 %d개 / 실패 %d개 / 전체 %d개 (소요: %s)", success_count, len(errors), total, elapsed_str)
     if errors:
         log.warning("실패한 문서 목록:")
         for err in errors:
@@ -166,7 +236,7 @@ def process_aos_pipeline(
     log.info("=" * 60)
 
     # Telegram 알림
-    notify_pipeline_result(config.get("TELEGRAM_BOT_TOKEN", ""), total, errors)
+    notify_pipeline_result(bot_token, total, errors, elapsed_sec=elapsed_total)
 
 
 # -----------------------------------------------------------------------------

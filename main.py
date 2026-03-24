@@ -4,10 +4,10 @@
 흐름: 스크래핑(또는 캐시 로드) → PDF 파싱(Gemini) → JSON 저장
 
 사용법:
-    python run_all.py                        # data.json 전체 처리
-    python run_all.py --dry-run              # 분류 요약만 출력, API 호출 없음
-    python run_all.py --force-scrape         # 웹에서 PDF 목록 재스크래핑 후 처리
-    python run_all.py --section "Spearhead"  # 특정 섹션만 처리
+    python main.py                        # data.json 전체 처리
+    python main.py --dry-run              # 분류 요약만 출력, API 호출 없음
+    python main.py --force-scrape         # 웹에서 PDF 목록 재스크래핑 후 처리
+    python main.py --section "Spearhead"  # 특정 섹션만 처리
 """
 
 from __future__ import annotations

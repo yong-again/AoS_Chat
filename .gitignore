@@ -35,6 +35,9 @@ faction_db/
 balance_db/
 other_db/
 
+# Local model weights (too large for git)
+Qwen3-8B/
+
 # OS / editor
 .DS_Store
 .vscode/

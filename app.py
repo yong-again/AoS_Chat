@@ -189,8 +189,6 @@ THINKING_BUDGET = {
     "other_db":     4000,
 }
 
-
-
 # ─── 라우터 프롬프트 ──────────────────────────────────────────────────────────
 ROUTER_PROMPT = """
 사용자의 질문을 분석하여 아래 5개 카테고리 중 가장 적합한 것을 하나만 선택하세요.
@@ -253,23 +251,13 @@ SYSTEM_PROMPTS = {
     ),
     "spearhead_db": (
         "당신은 워해머 에이지 오브 지그마 스피어헤드 모드 전문가입니다. "
-        "제공된 스피어헤드 JSON 데이터와 출처 파일명을 모두 활용하여 한국어로 답변하세요. "
-        "▶ 팩션의 스피어헤드 종류 질문: 다음 우선순위로 스피어헤드 목록을 구성하세요. "
-        "   (1순위) JSON 본문에 spearhead_name 필드가 있으면 그 값을 사용하세요. "
-        "   (2순위) spearhead_name이 없으면 출처 파일명에서 이름을 추출하세요. "
-        "           파일명 구조: spearhead_팩션명_-_스피어헤드명.json "
-        "           예: spearhead_kharadron_overlords_-_grundstok_trailblazers.json → Grundstok Trailblazers "
-        "           '_-_' 뒤쪽 부분을 추출하고 언더스코어를 공백으로, 단어 첫 글자를 대문자로 변환하세요. "
-        "   (3순위) 파일명도 없으면 JSON 데이터의 최상위 키 이름을 스피어헤드 이름으로 간주하세요. "
-        "▶ 특정 스피어헤드 정보 질문: 아래 세 항목을 모두 정리해서 답변하세요. "
-        "   (1) 스피어헤드 이름과 주요 특징 및 고유 규칙(spearhead_rules). "
-        "   (2) 포함된 유닛 목록: type이 'warscroll'인 항목의 unit_name을 모두 나열하세요. "
-        "   (3) 각 유닛의 간략한 역할(abilities 요약)을 함께 제공하세요. "
-        "▶ 스피어헤드 유닛 단독 질문: type이 'warscroll'인 항목의 unit_name을 모두 나열하세요. "
-        "[주의]: JSON 본문, 출처 파일명, 메타데이터를 최대한 조합하여 답변을 시도하세요. "
-        "세 가지 수단을 모두 써도 도저히 관련 정보를 찾을 수 없을 때만 "
-        "'정확한 정보를 위해 스피어헤드 이름이나 팩션명을 영문으로 알려주시겠어요?'라고 되물어보세요. "
-        "[절대 금지]: 일반 매치드 플레이 데이터나 외부 지식으로 스피어헤드 정보를 대체하지 마세요."
+        "제공된 JSON 데이터와 메타데이터를 바탕으로 한국어로 답변하세요. "
+        "▶ 팩션의 스피어헤드 종류 질문: 각 문서 앞에 표시된 '(스피어헤드 이름: ...)' 값만을 사용해 중복 없이 목록을 만드세요. "
+        "   이 값이 없는 항목은 목록에서 제외하세요. 파일명(출처)은 절대 답변에 노출하지 마세요. "
+        "▶ 특정 스피어헤드 정보 질문: 해당 스피어헤드의 이름, 규칙(spearhead_rules), 포함 유닛 목록(unit_name)을 정리하세요. "
+        "▶ 특정 스피어헤드 유닛 스탯 질문: 스탯과 무기 프로필을 설명하고 '스피어헤드 전용 데이터입니다'라고 명시하세요. "
+        "[절대 금지]: JSON 파일명을 답변에 포함하거나, 파일명에서 스피어헤드 이름을 추론하거나, 문서에 없는 내용을 지어내지 마세요. "
+        "스피어헤드 이름 정보가 없으면 '해당 팩션의 스피어헤드 이름 정보를 DB에서 찾을 수 없습니다'라고 안내하세요."
     ),
     "other_db": (
         "당신은 워해머 에이지 오브 지그마 특수 캠페인 규칙 전문가입니다. "
@@ -579,11 +567,33 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             sources_info = []
             if results["ids"] and len(results["ids"][0]) > 0:
                 for i, (doc, meta) in enumerate(
-                    zip(results["documents"][0], results["metadatas"][0])
+                        zip(results["documents"][0], results["metadatas"][0])
                 ):
-                    retrieved_context += f"[{i+1}] {doc.replace(chr(10), ' ')}\n\n"
-                    source = meta.get("unit_name") or meta.get("source") or "unknown"
-                    sources_info.append(f"- {source}")
+                    source_file = meta.get("source", "unknown")
+                    spearhead_name = meta.get("spearhead_name", "")
+
+                    # 메타데이터에 spearhead_name이 없으면 파일명에서 추출 시도
+                    # spearhead_팩션명_-_스피어헤드명.json → 스피어헤드명 부분 추출
+                    if not spearhead_name and source_file.startswith("spearhead_"):
+                        stem = source_file.replace(".json", "")
+                        parts = stem.split("_-_", 1)
+                        if len(parts) == 2:
+                            name_candidate = parts[1].replace("_", " ").strip()
+                            # "none", "unknown" 등 무의미한 값은 제외
+                            if name_candidate.lower() not in ("none", "unknown", ""):
+                                spearhead_name = name_candidate.title()
+
+                    # 스피어헤드 이름이 확보된 경우 텍스트에 주입
+                    if spearhead_name:
+                        retrieved_context += f"[{i + 1}] (스피어헤드 이름: {spearhead_name}, 출처: {source_file}) {doc.replace(chr(10), ' ')}\n\n"
+                    else:
+                        retrieved_context += f"[{i + 1}] (출처: {source_file}) {doc.replace(chr(10), ' ')}\n\n"
+
+                    source = spearhead_name or meta.get("unit_name") or source_file
+#                    sources_info.append(f"- {source}")
+
+                    display_name = spearhead_name or meta.get("unit_name") or "알수없음"
+                    sources_info.append(f"- {display_name} ({source_file})")
             else:
                 retrieved_context = "관련 문서를 찾을 수 없습니다."
 

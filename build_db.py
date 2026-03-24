@@ -74,6 +74,8 @@ def build_database():
                 spearhead_block = data.get("spearhead") if "spearhead" in data else None
                 root = spearhead_block if spearhead_block else data
 
+                spearhead_name = root.get("spearhead_name", "")
+
                 # 아미 룰 / 스피어헤드 룰 청킹
                 for rule_key in ("army_rules", "spearhead_rules"):
                     rule_data = root.get(rule_key)
@@ -81,7 +83,10 @@ def build_database():
                         for idx, rule in enumerate(rule_data):
                             doc_text = json.dumps(rule, ensure_ascii=False)
                             docs.append(doc_text)
-                            metadatas.append({"source": source_file, "faction": faction_key, "type": "rule", "category": rule_key})
+                            meta_dict = {"source": source_file, "faction": faction_key, "type": "rule", "category": rule_key}
+                            if spearhead_name:
+                                meta_dict["spearhead_name"] = spearhead_name
+                            metadatas.append(meta_dict)
                             ids.append(f"{source_file}_rule_{rule_key}_{idx}")
                     elif isinstance(rule_data, dict):
                         for rule_category, rules in rule_data.items():
@@ -89,17 +94,22 @@ def build_database():
                                 for idx, rule in enumerate(rules):
                                     doc_text = json.dumps(rule, ensure_ascii=False)
                                     docs.append(doc_text)
-                                    metadatas.append({"source": source_file, "faction": faction_key, "type": "rule", "category": rule_category})
+                                    meta_dict = {"source": source_file, "faction": faction_key, "type": "rule", "category": rule_key}
+                                    if spearhead_name:
+                                        meta_dict["spearhead_name"] = spearhead_name
+                                    metadatas.append(meta_dict)
                                     ids.append(f"{source_file}_rule_{rule_category}_{idx}")
 
                 # 워스크롤(유닛) 청킹
-                if "warscrolls" in root:
-                    for idx, unit in enumerate(root["warscrolls"]):
-                        unit_name = unit.get("unit_name", f"unit_{idx}")
-                        doc_text = json.dumps(unit, ensure_ascii=False)
-                        docs.append(doc_text)
-                        metadatas.append({"source": source_file, "faction": faction_key, "type": "warscroll", "unit_name": unit_name})
-                        ids.append(f"{source_file}_warscroll_{idx}")
+                for idx, unit in enumerate(root.get("warscrolls") or []):
+                    unit_name = unit.get("unit_name", f"unit_{idx}")
+                    doc_text = json.dumps(unit, ensure_ascii=False)
+                    docs.append(doc_text)
+                    meta_dict = {"source": source_file, "faction": faction_key, "type": "warscroll", "unit_name": unit_name}
+                    if spearhead_name:
+                        meta_dict["spearhead_name"] = spearhead_name
+                    metadatas.append(meta_dict)
+                    ids.append(f"{source_file}_warscroll_{idx}")
             
             # 2. 배틀 프로필(포인트) 데이터 청킹
             elif db_name == "balance_db":

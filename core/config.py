@@ -30,6 +30,9 @@ GEMINI_TEMPERATURE = 0.1
 API_DELAY_SECONDS = 5
 FILE_POLL_INTERVAL_SECONDS = 2
 
+# 병렬 처리: API Rate Limit을 고려한 동시 워커 수
+PIPELINE_MAX_WORKERS = 5
+
 # PDF 청크 크기 (페이지 단위) — 문서 밀도에 따라 조정
 # 포인트 표는 밀도가 높아 4~5페이지, 팩션/스피어헤드는 8페이지, 코어룰은 15페이지
 CHUNK_SIZES: dict[str, int] = {
@@ -46,134 +49,42 @@ CHUNK_SIZES: dict[str, int] = {
 
 FACTION_PROMPT = """
 이 문서는 워해머 에이지 오브 지그마 팩션 팩입니다.
-본편 매치드 플레이용 규칙과 스피어헤드(Spearhead) 전용 규칙을 완벽하게 분리하여 다음 구조의 JSON 형식으로 추출하세요:
-
-{
-  "aos_matched_play": {
-    "army_rules": {
-      "battle_traits": [{"name": "규칙명", "effect": "설명"}],
-      "battle_formations": [{"name": "포메이션명", "effect": "설명"}],
-      "heroic_traits": [{"name": "트레잇명", "effect": "설명"}],
-      "artefacts_of_power": [{"name": "아티팩트명", "effect": "설명"}],
-      "lores": [{"name": "마법/기도명", "type": "Spell/Prayer/Manifestation", "effect": "설명"}]
-    },
-    "warscrolls": [
-      {
-        "unit_name": "유닛 이름",
-        "stats": {"M": "이동", "S": "세이브", "C": "컨트롤", "H": "체력"},
-        "weapons": [
-          {"name": "무기명", "type": "Melee/Ranged", "range": "거리", "attacks": "횟수", "hit": "명중", "wound": "운드", "rend": "관통", "damage": "피해", "ability": "특수 능력"}
-        ],
-        "abilities": [
-          {"title": "능력 이름", "timing": "사용 단계(예: Hero Phase)", "effect": "능력 효과 설명"}
-        ],
-        "keywords": ["키워드1", "키워드2"]
-      }
-    ]
-  },
-  "spearhead": {
-    "spearhead_name": "스피어헤드 팩트 이름",
-    "spearhead_rules": [{"name": "규칙명", "effect": "설명"}],
-    "warscrolls": [
-      {
-        "unit_name": "유닛 이름",
-        "stats": {"M": "이동", "S": "세이브", "C": "컨트롤", "H": "체력"},
-        "weapons": [
-          {"name": "무기명", "type": "Melee/Ranged", "range": "거리", "attacks": "횟수", "hit": "명중", "wound": "운드", "rend": "관통", "damage": "피해", "ability": "특수 능력"}
-        ],
-        "abilities": [
-          {"title": "능력 이름", "timing": "사용 단계", "effect": "능력 효과 설명"}
-        ],
-        "keywords": ["키워드1", "키워드2"]
-      }
-    ]
-  }
-}
+본편 매치드 플레이(aos_matched_play)와 스피어헤드(spearhead) 규칙을 완벽하게 분리하여 추출하세요.
 
 [매우 중요한 지시사항]
-1. 데이터가 없는 항목은 null로 표시하세요. 
+1. 데이터가 없는 항목은 null로 표시하세요.
 2. 스피어헤드 로고가 있는 마지막 섹션의 데이터가 본편과 섞이지 않도록 각별히 주의하세요.
-3. 본편(aos_matched_play)에 등장한 유닛과 스피어헤드(spearhead)에 등장하는 유닛의 이름이 같더라도, 스피어헤드에서는 수치(Stats, Weapons)와 특수 능력(Abilities)이 완전히 다르게 재설정되어 있습니다.
-4. 따라서 스피어헤드의 워스크롤을 추출할 때 "본편과 동일" 등의 이유로 절대 생략하지 말고, 스피어헤드 페이지에 적힌 고유의 능력치와 무기를 빠짐없이 독립적으로 끝까지 추출해야 합니다.
+3. 본편(aos_matched_play)에 등장한 유닛과 스피어헤드(spearhead)에 등장하는 유닛의 이름이 같더라도,
+   스피어헤드에서는 수치(Stats, Weapons)와 특수 능력(Abilities)이 완전히 다르게 재설정되어 있습니다.
+4. 스피어헤드의 워스크롤을 추출할 때 "본편과 동일" 등의 이유로 절대 생략하지 말고,
+   스피어헤드 페이지에 적힌 고유의 능력치와 무기를 빠짐없이 독립적으로 추출해야 합니다.
 """
 
 RULE_PROMPT = """
 이 문서는 워해머 에이지 오브 지그마의 코어 룰 및 용어집입니다.
-일반 코어 룰 메커니즘과 스피어헤드 전용 코어 룰을 분리하여 JSON으로 요약 추출하세요.
-{"core_rules": {"mechanics": [], "terrain": [], "glossary": []}, "spearhead_rules": {"mechanics": []}}
+일반 코어 룰 메커니즘(core_rules)과 스피어헤드 전용 코어 룰(spearhead_rules)을 분리하여 추출하세요.
+core_rules에는 mechanics, terrain, glossary 항목을 포함하세요.
 """
 
 BALANCE_PROMPT = """
 이 문서는 워해머 에이지 오브 지그마의 배틀 프로필(포인트 및 편성 제한)입니다.
-문서에 등장하는 모든 유닛과 유명 연대(Regiments of Renown)의 정보를 반드시 아래의 정확한 JSON 배열 스키마로만 추출하세요.
-
-[
-  {
-    "unit_name": "유닛 이름 (영어 원문 유지)",
-    "points": "포인트 (숫자 또는 문자열, 예: '120' 또는 '150 (+10)')",
-    "unit_size": "유닛 사이즈 (숫자 또는 문자열)",
-    "regiment_options": "연대(Regiment) 옵션 (없으면 null)"
-  }
-]
+문서에 등장하는 모든 유닛과 유명 연대(Regiments of Renown)의 정보를 units 배열에 빠짐없이 추출하세요.
 
 [매우 중요한 지시사항]
-1. 위에서 제시한 4개의 키(unit_name, points, unit_size, regiment_options) 외에 Base Size, Notes 등 다른 키는 절대 임의로 추가하지 마세요.
-2. 데이터를 "table_name"이나 "data" 같은 상위 객체로 감싸지 말고, 오직 평탄화된 단일 JSON 배열([ { }, { } ]) 형태로만 반환하세요.
-3. 해당 항목의 데이터가 표에 없다면 빈 문자열("")이나 "None" 대신 반드시 `null`을 사용하세요.
+1. unit_name은 영어 원문을 유지하세요.
+2. points는 "120" 또는 "150 (+10)" 형태의 문자열로 추출하세요.
+3. 해당 항목의 데이터가 없다면 반드시 null을 사용하세요.
 """
 
 DEFAULT_PROMPT = "문서의 핵심 내용을 구조화된 JSON으로 추출하세요."
 
 SPEARHEAD_FACTION_PROMPT = """
-이 문서는 워해머 에이지 오브 지그마의 특정 팩션 전용 '스피어헤드(Spearhead)' 규칙 문서입니다.
-이 문서의 내용을 다음 JSON 구조로 완벽하게 추출하세요. 유닛의 워스크롤을 절대 생략해서는 안 됩니다.
-
-{
-  "spearhead": {
-    "spearhead_name": "스피어헤드 팩트 이름",
-    "spearhead_rules": [
-      {"name": "규칙명/어빌리티명/강화명", "effect": "설명"}
-    ],
-    "warscrolls": [
-      {
-        "unit_name": "유닛 이름",
-        "stats": {"M": "이동", "S": "세이브", "C": "컨트롤", "H": "체력"},
-        "weapons": [
-          {"name": "무기명", "type": "Melee/Ranged", "range": "거리", "attacks": "횟수", "hit": "명중", "wound": "운드", "rend": "관통", "damage": "피해", "ability": "특수 능력"}
-        ],
-        "abilities": [
-          {"title": "능력 이름", "timing": "사용 단계", "effect": "능력 효과 설명"}
-        ],
-        "keywords": ["키워드1", "키워드2"]
-      }
-    ]
-  }
-}
+이 문서는 워해머 에이지 오브 지그마의 특정 팩션 전용 스피어헤드(Spearhead) 규칙 문서입니다.
+spearhead_name, spearhead_rules, warscrolls를 빠짐없이 추출하세요.
+유닛의 워스크롤(stats, weapons, abilities, keywords)을 절대 생략해서는 안 됩니다.
 """
 
 OTHER_PROMPT = """
 이 문서는 워해머 에이지 오브 지그마의 특수 규칙(예: 기란의 재앙 등)입니다.
-문서의 내용을 다음 표준 구조에 최대한 맞추어 JSON 배열로 추출하세요:
-
-[
-  {
-    "name": "팩션 또는 규칙 세트 이름",
-    "army_rules": [
-      {"name": "규칙명/특성명", "effect": "설명"}
-    ],
-    "warscrolls": [
-      {
-        "unit_name": "유닛 이름",
-        "stats": {"M": "이동", "S": "세이브", "C": "컨트롤", "H": "체력"},
-        "weapons": [
-          {"name": "무기명", "type": "Melee/Ranged", "range": "거리", "attacks": "횟수", "hit": "명중", "wound": "운드", "rend": "관통", "damage": "피해", "ability": "특수 능력"}
-        ],
-        "abilities": [
-          {"title": "능력 이름", "timing": "사용 단계", "effect": "능력 효과 설명"}
-        ],
-        "keywords": ["키워드1", "키워드2"]
-      }
-    ]
-  }
-]
+팩션 또는 규칙 세트별로 name, army_rules, warscrolls를 entries 배열에 추출하세요.
 """
