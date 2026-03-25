@@ -8,6 +8,7 @@ from google import genai
 from google.genai import types
 from dotenv import dotenv_values
 from tools import calculate_expected_damage
+import pprint
 
 # ─── 채팅 내역 저장 ───────────────────────────────────────────────────────────
 HISTORY_DIR = "chat_history"
@@ -193,10 +194,11 @@ THINKING_BUDGET = {
 ROUTER_PROMPT = """
 사용자의 질문을 분석하여 아래 5개 카테고리 중 가장 적합한 것을 하나만 선택하세요.
 - 질문에 포인트, 점수, 비용, points, 부대 편성 등의 단어가 있으면 무조건 balance_db 를 선택하세요.
-- 질문에 "스피어헤드"라는 단어가 있거나, 스피어헤드 고유 명칭(예: Grundstok Trailblazers, Yndrasta's Spearhead, Ironjawz Waaagh!, Dawnbringers 등 팩션명+Spearhead 형태 또는 스피어헤드 세트 이름)이 포함되어 있으면 무조건 spearhead_db를 선택하세요.
+- 질문에 "스피어헤드", "뱅가드", "Vanguard", "Spearhead" 등의 단어가 있거나, 스피어헤드 고유 명칭이 포함되어 있으면 무조건 spearhead_db를 선택하세요.
+- 질문에 "의미", "뜻", "정의", "무엇인가요" 등의 단어가 있거나 특정 게임 용어/키워드(예: CAVALRY, WARD, STRIKE-FIRST 등)에 대한 설명을 요구하면 무조건 rule_db를 선택하세요.
 - 반드시 카테고리 이름(영문, 예: rule_db)만 출력하고 다른 텍스트는 절대 포함하지 마세요.
 
-rule_db      : 코어 룰, 턴 진행 순서, 일반적인 게임 메커니즘 (이동, 슈팅, 전투, 마법, 차지 등)
+rule_db      : 코어 룰, 용어집(Glossary), 키워드 정의, 일반적인 게임 메커니즘 (이동, 슈팅, 전투, 마법, 차지 등)
 faction_db   : 특정 유닛의 스탯, 무기, 팩션 고유 능력, 워스크롤
 balance_db   : 유닛의 포인트 가격, 부대 편성 제한, 레지먼트
 spearhead_db : 스피어헤드 모드 전용 룰, 스피어헤드 세트 구성(warscrolls), 스피어헤드 고유 규칙(spearhead_rules)
@@ -215,17 +217,18 @@ DB_LABELS = {
 
 # 각 DB에서 가져올 문서 수 (balance_db는 청크가 작아 더 많이 가져옴)
 N_RESULTS = {
-    "rule_db":      5,
+    "rule_db":      10,
     "faction_db":   15,
     "balance_db":   60,
-    "spearhead_db": 5,
+    "spearhead_db": 15,
     "other_db":     5,
 }
 
 SYSTEM_PROMPTS = {
     "rule_db": (
         "당신은 워해머 에이지 오브 지그마의 공인 심판입니다. "
-        "제공된 코어 룰 문서를 바탕으로 정확하게 한국어로 답변하세요. "
+        "제공된 코어 룰 및 용어집(Glossary) 문서를 바탕으로 정확하게 한국어로 답변하세요. "
+        "▶ 용어/키워드 질문: 특정 키워드(예: CAVALRY, WARD)의 의미를 물어보면, 문서에서 해당 용어의 정확한 규칙적 정의와 효과를 보기 쉽게 설명해주세요. "
         "[절대 금지]: 제공된 문서에 질문과 직접 일치하는 내용이 없다면 다음 행동을 하지 마세요: "
         "(1) 기존 지식이나 외부 설정으로 답변 생성, "
         "(2) 유사한 룰을 찾아 유추하거나 비유하는 설명, "
@@ -343,6 +346,45 @@ def route_query(query: str, client) -> str:
     db_name = response.text.strip().lower()
     return db_name if db_name in DB_LABELS else "rule_db"
 
+def rewrite_query_with_context(current_query: str, history: list, client) -> str:
+    """이전 대화 문맥을 파악하여 현재 질문을 독립적인 검색용 질문으로 재작성합니다."""
+    # 대화 기록이 없거나 1개(인사말)뿐이면 재작성 불필요
+    if len(history) <= 1:
+        return current_query
+
+    # 최근 대화 4개(2턴) 정도만 문맥으로 사용
+    history_text = ""
+    recent_history = history[-5:1] if len(history) >= 5 else history[:-1]
+
+    for msg in recent_history:
+        role = "사용자" if msg["role"] == "user" else "AI 심판"
+        # 내용이 너무 길면 자르기
+        content = msg["content"][:200] + "..." if len(msg['content']) > 200 else msg['cotent']
+        history_text += f"{role}: {content}\n"
+
+    prompt = f"""당신은 워해머 에이지 오브 지그마 챗봇의 문맥 분석기입니다.
+    아래 대화 기록을 읽고, 사용자의 최신 질문을 대화 문맥이 모두 포함된 '독립적인 하나의 완벽한 질문'으로 재작성하세요.
+    대명사(이거, 저 팩션, 그 스피어헤드 등)나 생략된 주어를 명확한 고유명사로 대체하세요.
+    질문이 이미 명확하다면 그대로 출력하세요. 다른 말은 절대 덧붙이지 마세요.
+    
+    [대화기록]
+    {history_text}
+    
+    [최신질문]
+    사용자: {current_query}
+    
+    [재작성된 질문]
+"""
+    try:
+        response = client.model.generate_content(
+            model=ROUTER_MODEL,
+            content=prompt,
+            config=types.GenerateContentConfig(temperature=0.0),
+        )
+        return response.text.strip()
+    except Exception:
+        return current_query
+
 # ─── UI ──────────────────────────────────────────────────────────────────────
 gemini_client, embed_model, collections = load_resources()
 
@@ -448,16 +490,22 @@ if user_query := st.chat_input("질문을 입력하세요..."):
     with st.chat_message("assistant", avatar=AVATAR_ASSISTANT):
         with st.spinner("지그마의 서고를 뒤적이는 중..."):
 
+            # 0. 문백을 반영한 쿼리 재작성 (대화 누적)
+            rewritten_query = rewrite_query_with_context(user_query, st.session_state.messages, gemini_client)
+            # 디버깅용
+            st.caption(f"문맥 변환: {rewritten_query}")
+
             # 1. 라우터: '사용자의 원본 질문'으로 의도를 파악하여 DB 결정
-            db_name = route_query(user_query, gemini_client)
+            db_name = route_query(rewritten_query, gemini_client)
 
             # 2. 검색 쿼리 추출: 벡터 DB에 던질 '순수 영어 키워드'만 생성
-            search_query = generate_search_query(user_query, db_name, gemini_client)
+            search_query = generate_search_query(rewritten_query, db_name, gemini_client)
             # 빈 문자열("")이나 따옴표만 있는 경우 정리
             search_query = search_query.strip().strip('"').strip("'").strip()
+            faction_hint = search_query.lower().replace("-", " ").strip()
 
             # 3. 쿼리 임베딩 & 벡터 검색 (순수 영어 키워드로 검색하여 정확도 100% 달성)
-            _q = search_query if search_query else user_query
+            _q = search_query if search_query else rewritten_query
             query_embedding = embed_model.encode("query: " + _q).tolist()
             collection = collections[db_name]
 
@@ -467,11 +515,32 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 include=["documents", "metadatas", "distances"],
             )
 
+            # [수정된 부분] 무조건 faction으로 필터링하지 않고, 검색어가 팩션 이름일 때만 적용합니다.
+            KNOWN_FACTIONS = [
+                "stormcast eternals", "nighthaunt", "lumineth realm lords",
+                "disciples of tzeentch", "hedonites of slaanesh", "maggotkin of nurgle",
+                "ossiarch bonereapers", "fyreslayers", "ogor mawtribes", "seraphon",
+                "sylvaneth", "daughters of khaine", "kharadron overlords",
+                "ironjawz", "orruk warclans", "gloomspite gitz", "slaves to darkness",
+                "soulblight gravelords", "flesh eater courts", "cities of sigmar",
+                "kruleboyz", "skaven", "blades of khorne", "idonneth deepkin"
+            ]
+
+            if faction_hint in KNOWN_FACTIONS:
+                query_kwargs["where"] = {"faction": faction_hint}
+
             # rule_db: 패치 포함 여부에 따라 소스 필터 적용
             if db_name == "rule_db" and not include_patch:
-                query_kwargs["where"] = {"source": {"$ne": "rules_updates.json"}}
+                if "where" in query_kwargs:
+                    query_kwargs["where"] = {
+                        "$and": [query_kwargs["where"], {"source": {"$ne": "rules_updates.json"}}]
+                    }
+                else:
+                    query_kwargs["where"] = {"source": {"$ne": "rules_updates.json"}}
 
             results = collection.query(**query_kwargs)
+
+            pprint.pp(results)
 
             # 벡터 검색 결과에 search_query 키워드가 없으면 키워드 폴백 검색
             def _keyword_hit(docs: list, keyword: str) -> bool:
@@ -479,25 +548,23 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 return any(kw in d.upper() for d in docs)
 
             def _fallback_search(col, keyword: str, limit: int = 5, warscroll_only: bool = False):
-                """전체 구문 → 단어별 순으로 키워드 매칭 폴백."""
                 extra = {"where": {"type": "warscroll"}} if warscroll_only else {}
-                # 1차: 전체 구문 대문자
-                r = col.get(where_document={"$contains": keyword.upper()},
-                            include=["documents", "metadatas"], limit=limit, **extra)
-                if r["ids"]:
-                    return r
-                # 2차: 전체 구문 원문
-                r = col.get(where_document={"$contains": keyword},
-                            include=["documents", "metadatas"], limit=limit, **extra)
-                if r["ids"]:
-                    return r
-                # 3차: 단어별 검색 (4글자 이상 단어 우선)
-                words = [w for w in keyword.split() if len(w) >= 4]
-                for word in words:
-                    r = col.get(where_document={"$contains": word.upper()},
+
+                # 1차: 대문자, 원문, 첫글자대문자(Title) 모두 찔러보기
+                for kw in [keyword.upper(), keyword, keyword.title()]:
+                    r = col.get(where_document={"$contains": kw},
                                 include=["documents", "metadatas"], limit=limit, **extra)
                     if r["ids"]:
                         return r
+
+                # 2차: 단어별 검색 (4글자 이상 단어 우선)
+                words = [w for w in keyword.split() if len(w) >= 4]
+                for word in words:
+                    for w_case in [word.upper(), word, word.title()]:
+                        r = col.get(where_document={"$contains": w_case},
+                                    include=["documents", "metadatas"], limit=limit, **extra)
+                        if r["ids"]:
+                            return r
                 return {"ids": [], "documents": [], "metadatas": []}
 
             flat_docs = results["documents"][0] if results["ids"] and results["ids"][0] else []
@@ -511,19 +578,7 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                         results["documents"][0] = fallback["documents"] + flat_docs
                         results["metadatas"][0] = fallback["metadatas"] + results["metadatas"][0]
                         flat_docs = results["documents"][0]
-                except Exception:
-                    pass
 
-            # spearhead_db에서 못 찾으면 faction_db에서도 크로스 검색 (반대 방향)
-            if db_name == "spearhead_db" and search_query and not _keyword_hit(flat_docs, search_query):
-                try:
-                    faction_col = collections["faction_db"]
-                    fc_fallback = _fallback_search(faction_col, search_query,
-                                                   limit=20, warscroll_only=True)
-                    if fc_fallback["ids"]:
-                        results["documents"][0] = fc_fallback["documents"] + flat_docs
-                        results["metadatas"][0] = fc_fallback["metadatas"] + results["metadatas"][0]
-                        flat_docs = results["documents"][0]
                 except Exception:
                     pass
 
@@ -539,12 +594,14 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                         # search_query를 소문자+공백 정규화해서 faction 키와 매칭
                         faction_hint = search_query.lower().replace("-", " ").strip()
                         sp_by_faction = spearhead_col.get(
+                            query_embeddings=[query_embedding],
                             where={"$and": [{"faction": {"$eq": faction_hint}}, {"type": {"$eq": "warscroll"}}]},
                             include=["documents", "metadatas"],
                             limit=20,
                         )
                         if sp_by_faction["ids"]:
                             sp_fallback = sp_by_faction
+
                     if not sp_fallback["ids"]:
                         # 3차: warscroll 타입만 벡터 검색
                         sp_vec = spearhead_col.query(
@@ -556,6 +613,7 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                         sp_fallback["documents"] = sp_vec["documents"][0]
                         sp_fallback["metadatas"] = sp_vec["metadatas"][0]
                         sp_fallback["ids"] = sp_vec["ids"][0]
+
                     if sp_fallback["ids"]:
                         results["documents"][0] = sp_fallback["documents"] + flat_docs
                         results["metadatas"][0] = sp_fallback["metadatas"] + results["metadatas"][0]
@@ -590,7 +648,7 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                         retrieved_context += f"[{i + 1}] (출처: {source_file}) {doc.replace(chr(10), ' ')}\n\n"
 
                     source = spearhead_name or meta.get("unit_name") or source_file
-#                    sources_info.append(f"- {source}")
+                    #sources_info.append(f"- {source}")
 
                     display_name = spearhead_name or meta.get("unit_name") or "알수없음"
                     sources_info.append(f"- {display_name} ({source_file})")

@@ -38,10 +38,12 @@ from core.logging_config import get_logger, setup_logging
 from core.utils import safe_filename
 from pipeline.classifier import build_db_tasks
 from pipeline.gemini_io import (
+    _has_spearhead_data,
     delete_gemini_file,
     download_pdf,
     extract_json_with_gemini,
     merge_chunk_results,
+    merge_faction_chunk_results,
     split_pdf_bytes,
     upload_pdf_to_gemini,
 )
@@ -103,9 +105,12 @@ def _summarize_faction(data: dict) -> None:
         if section_key not in data:
             continue
         sec = data[section_key]
+        if sec is None:
+            print(f"  [{section_key}] null")
+            continue
         print(f"  [{section_key}]")
-        if "army_rules" in sec:
-            ar = sec["army_rules"]
+        ar = sec.get("army_rules") if isinstance(sec, dict) else None
+        if ar is not None:
             for field in ("battle_traits", "battle_formations", "heroic_traits", "artefacts_of_power", "lores"):
                 val = ar.get(field)
                 count = len(val) if isinstance(val, list) else ("null" if val is None else "?")
@@ -126,6 +131,7 @@ def process_doc(task: dict, client: genai.Client | None, dry_run: bool) -> None:
     doc_name: str = task["name"]
     url: str = task["url"]
     prompt: str = task["prompt"]
+    schema_cls = task["schema"]
     db_target: str = task["db_target"]
     chunk_size: int = cfg.CHUNK_SIZES.get(db_target, cfg.CHUNK_SIZES["faction_db"])
 
@@ -174,17 +180,47 @@ def process_doc(task: dict, client: genai.Client | None, dry_run: bool) -> None:
     # ── Step 2: 청크별 Gemini 파싱 ──────────────────────────────────────────
     section_header(f"STEP 2 — 청크별 Gemini 파싱 [{doc_name}]")
 
+    from pipeline.schemas import SpearheadFactionResult
     chunk_results: list = []
+    spearhead_mode = False           # faction_db 전용: 스피어헤드 감지 후 스키마 전환 플래그
+    current_spearhead_name = None    # 가장 최근에 확정된 spearhead_name
+
     for i, chunk_bytes in enumerate(chunks, start=1):
         start_page = (i - 1) * chunk_size + 1
         end_page = min(i * chunk_size, total_pages)
         print(f"\n  [청크 {i}/{len(chunks)}] 페이지 {start_page}~{end_page} 처리 중...")
 
+        # faction_db: 스피어헤드 감지 후 스키마 전환
+        if db_target == "faction_db" and spearhead_mode:
+            current_schema = SpearheadFactionResult
+            current_prompt = cfg.SPEARHEAD_FACTION_PROMPT
+            print(f"  ⚡ [스피어헤드 모드] SpearheadFactionResult 스키마 적용")
+        else:
+            current_schema = schema_cls
+            current_prompt = prompt
+
         aos_file = upload_pdf_to_gemini(client, chunk_bytes)
         log.debug("  Gemini 파일 업로드 완료: %s", aos_file.name)
 
-        parsed = extract_json_with_gemini(client, aos_file, prompt)
+        parsed = extract_json_with_gemini(client, aos_file, current_prompt, current_schema)
         delete_gemini_file(client, aos_file.name)
+
+        # faction_db: 스피어헤드 감지/전환 및 spearhead_name 전파
+        if db_target == "faction_db":
+            if not spearhead_mode and _has_spearhead_data(parsed):
+                current_spearhead_name = (parsed.get("spearhead") or {}).get("spearhead_name")
+                print(f"  ⚡ 스피어헤드 감지! name={current_spearhead_name} | 청크 {i+1}부터 SpearheadFactionResult 모드")
+                spearhead_mode = True
+            elif spearhead_mode:
+                sp = parsed.get("spearhead") or {}
+                returned_name = sp.get("spearhead_name")
+                if returned_name and returned_name != current_spearhead_name:
+                    print(f"  ⚡ 새 spearhead_name 감지: {current_spearhead_name} → {returned_name}")
+                    current_spearhead_name = returned_name
+                elif not returned_name and current_spearhead_name:
+                    sp["spearhead_name"] = current_spearhead_name
+                    parsed["spearhead"] = sp
+                    print(f"  ⚡ spearhead_name 전파: {current_spearhead_name}")
 
         result_path = results_dir / f"chunk_{i:02d}_result.json"
         result_path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -197,7 +233,11 @@ def process_doc(task: dict, client: genai.Client | None, dry_run: bool) -> None:
     # ── Step 3: 병합 결과 비교 ──────────────────────────────────────────────
     section_header(f"STEP 3 — 병합 결과 vs 기존 저장 파일 [{doc_name}]")
 
-    merged = merge_chunk_results(chunk_results)
+    merged = (
+        merge_faction_chunk_results(chunk_results)
+        if db_target == "faction_db"
+        else merge_chunk_results(chunk_results)
+    )
     merged_path = doc_dir / "merged_result.json"
     merged_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n  ✓ 병합 결과 저장: {merged_path}")

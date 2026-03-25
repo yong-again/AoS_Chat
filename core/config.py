@@ -58,6 +58,8 @@ FACTION_PROMPT = """
    스피어헤드에서는 수치(Stats, Weapons)와 특수 능력(Abilities)이 완전히 다르게 재설정되어 있습니다.
 4. 스피어헤드의 워스크롤을 추출할 때 "본편과 동일" 등의 이유로 절대 생략하지 말고,
    스피어헤드 페이지에 적힌 고유의 능력치와 무기를 빠짐없이 독립적으로 추출해야 합니다.
+5. spearhead_name은 스피어헤드 고유 이름만 추출하고 팩션명은 절대 포함하지 마세요.
+   (예: "Vanari Bladelords", "Grundstok Trailblazers" — "Lumineth Realm-lords Vanari Bladelords" 형태 금지)
 """
 
 RULE_PROMPT = """

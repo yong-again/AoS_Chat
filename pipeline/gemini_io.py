@@ -169,6 +169,124 @@ def extract_json_with_gemini(
     )
 
 
+def merge_faction_chunk_results(chunk_results: list[dict]) -> dict:
+    """faction_db 청크 결과 병합 (FactionPackResult + SpearheadFactionResult 혼합 지원).
+
+    FactionPackResult 형태(aos_matched_play 키 보유): aos_matched_play 합산,
+    경계 청크의 spearhead도 수집.
+    SpearheadFactionResult 형태(spearhead 키만 보유): spearhead 합산.
+    """
+    merged_amp: dict = {}
+    merged_sp: dict = {}
+    current_spearhead_name: str | None = None
+
+    for r in chunk_results:
+        amp = r.get("aos_matched_play") or {}
+        sp = r.get("spearhead") or {}
+
+        if amp:
+            merged_amp = _merge_dicts(merged_amp, amp) if merged_amp else dict(amp)
+
+        if _has_spearhead_data(r):
+            returned_name = sp.get("spearhead_name")
+            if returned_name and returned_name != current_spearhead_name:
+                current_spearhead_name = returned_name
+            elif not returned_name and current_spearhead_name:
+                sp = dict(sp)
+                sp["spearhead_name"] = current_spearhead_name
+            merged_sp = _merge_dicts(merged_sp, sp) if merged_sp else dict(sp)
+
+    return {"aos_matched_play": merged_amp, "spearhead": merged_sp}
+
+
+def _has_spearhead_data(parsed: dict) -> bool:
+    """FactionPackResult dict에 실질적인 스피어헤드 데이터가 있는지 확인."""
+    sp = parsed.get("spearhead") or {}
+    return bool(sp.get("spearhead_name") or sp.get("warscrolls") or sp.get("spearhead_rules"))
+
+
+def process_faction_chunks(
+    client: genai.Client,
+    chunks: list[bytes],
+    faction_prompt: str,
+    spearhead_prompt: str,
+    doc_name: str = "",
+) -> dict:
+    """팩션 팩 청크를 스피어헤드 감지 기반 적응형 스키마로 처리.
+
+    - 스피어헤드 감지 전: FactionPackResult 스키마로 처리
+    - 스피어헤드 감지 후: SpearheadFactionResult 스키마로 전환
+      (스피어헤드 첫 페이지가 청크 경계에 걸려 이후 청크가 통째로 스피어헤드인 경우 대응)
+    - 반환: {"aos_matched_play": ..., "spearhead": ...}
+    """
+    from pipeline.schemas import FactionPackResult, SpearheadFactionResult
+
+    spearhead_mode = False
+    current_spearhead_name: str | None = None  # 가장 최근에 확정된 spearhead_name
+    aos_results: list[dict] = []
+    spearhead_results: list[dict] = []
+    total = len(chunks)
+
+    for c_idx, chunk_bytes in enumerate(chunks, start=1):
+        log.debug("  [%s] 청크 [%d/%d] Gemini 업로드 중", doc_name, c_idx, total)
+        aos_file = upload_pdf_to_gemini(client, chunk_bytes)
+
+        if not spearhead_mode:
+            log.debug("  [%s] 청크 [%d/%d] JSON 추출 중 (FactionPackResult)", doc_name, c_idx, total)
+            parsed = extract_json_with_gemini(client, aos_file, faction_prompt, FactionPackResult)
+            delete_gemini_file(client, aos_file.name)
+            aos_results.append(parsed)
+            if _has_spearhead_data(parsed):
+                current_spearhead_name = (parsed.get("spearhead") or {}).get("spearhead_name")
+                log.info(
+                    "  [%s] 청크 %d/%d: 스피어헤드 감지 (name=%s) → 이후 청크 SpearheadFactionResult 전환",
+                    doc_name, c_idx, total, current_spearhead_name,
+                )
+                spearhead_mode = True
+        else:
+            log.debug("  [%s] 청크 [%d/%d] JSON 추출 중 (SpearheadFactionResult)", doc_name, c_idx, total)
+            parsed = extract_json_with_gemini(client, aos_file, spearhead_prompt, SpearheadFactionResult)
+            delete_gemini_file(client, aos_file.name)
+
+            # spearhead_name 전파: 새 이름이 나오면 갱신, 없으면 현재 이름 주입
+            sp = parsed.get("spearhead") or {}
+            returned_name = sp.get("spearhead_name")
+            if returned_name and returned_name != current_spearhead_name:
+                log.info(
+                    "  [%s] 청크 %d/%d: 새 spearhead_name 감지 → %s",
+                    doc_name, c_idx, total, returned_name,
+                )
+                current_spearhead_name = returned_name
+            elif not returned_name and current_spearhead_name:
+                sp["spearhead_name"] = current_spearhead_name
+                parsed["spearhead"] = sp
+
+            spearhead_results.append(parsed)
+
+        time.sleep(cfg.API_DELAY_SECONDS)
+
+    # ── 병합 ─────────────────────────────────────────────────────────────────
+    merged_amp: dict = {}
+    merged_sp: dict = {}
+
+    # FactionPackResult 청크: aos_matched_play 합산, 경계 청크의 spearhead도 수집
+    for r in aos_results:
+        amp = r.get("aos_matched_play") or {}
+        if amp:
+            merged_amp = _merge_dicts(merged_amp, amp) if merged_amp else dict(amp)
+        if _has_spearhead_data(r):
+            sp = r.get("spearhead") or {}
+            merged_sp = _merge_dicts(merged_sp, sp) if merged_sp else dict(sp)
+
+    # SpearheadFactionResult 청크: spearhead 합산 (각 청크에 이미 올바른 name이 주입됨)
+    for r in spearhead_results:
+        sp = r.get("spearhead") or {}
+        if sp:
+            merged_sp = _merge_dicts(merged_sp, sp) if merged_sp else dict(sp)
+
+    return {"aos_matched_play": merged_amp, "spearhead": merged_sp}
+
+
 def delete_gemini_file(client: genai.Client, name: str) -> None:
     retry_with_exponential_backoff(
         lambda: client.files.delete(name=name),

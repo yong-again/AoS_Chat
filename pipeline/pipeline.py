@@ -24,6 +24,7 @@ from pipeline.gemini_io import (
     download_pdf,
     extract_json_with_gemini,
     merge_chunk_results,
+    process_faction_chunks,
     split_pdf_bytes,
     upload_pdf_to_gemini,
 )
@@ -173,17 +174,22 @@ def process_aos_pipeline(
         if total_chunks > 1:
             log.info("  [%s] 청킹 파싱: %d페이지 단위 / 총 %d청크", doc_name, chunk_size, total_chunks)
 
-        chunk_results = []
-        for c_idx, chunk_bytes in enumerate(chunks, start=1):
-            log.debug("  [%s] 청크 [%d/%d] Gemini 업로드 중", doc_name, c_idx, total_chunks)
-            aos_file = upload_pdf_to_gemini(client, chunk_bytes)
-            log.debug("  [%s] 청크 [%d/%d] JSON 추출 중", doc_name, c_idx, total_chunks)
-            parsed_chunk = extract_json_with_gemini(client, aos_file, prompt, schema_cls)
-            delete_gemini_file(client, aos_file.name)
-            chunk_results.append(parsed_chunk)
-            time.sleep(cfg.API_DELAY_SECONDS)
-
-        parsed = merge_chunk_results(chunk_results)
+        if db_target == "faction_db":
+            # 팩션 팩: 스피어헤드 감지 시 이후 청크 스키마 자동 전환
+            parsed = process_faction_chunks(
+                client, chunks, prompt, cfg.SPEARHEAD_FACTION_PROMPT, doc_name=doc_name
+            )
+        else:
+            chunk_results = []
+            for c_idx, chunk_bytes in enumerate(chunks, start=1):
+                log.debug("  [%s] 청크 [%d/%d] Gemini 업로드 중", doc_name, c_idx, total_chunks)
+                aos_file = upload_pdf_to_gemini(client, chunk_bytes)
+                log.debug("  [%s] 청크 [%d/%d] JSON 추출 중", doc_name, c_idx, total_chunks)
+                parsed_chunk = extract_json_with_gemini(client, aos_file, prompt, schema_cls)
+                delete_gemini_file(client, aos_file.name)
+                chunk_results.append(parsed_chunk)
+                time.sleep(cfg.API_DELAY_SECONDS)
+            parsed = merge_chunk_results(chunk_results)
         return save_parsed_json(parsed, db_target, doc_name, output_dir)
 
     # ── 병렬 처리 (ThreadPoolExecutor) ──────────────────────────────────────
