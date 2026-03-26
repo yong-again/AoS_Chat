@@ -33,7 +33,7 @@ def classify_document(doc_name: str) -> Optional[tuple[str, str, Type[BaseModel]
 
     # 스피어헤드 라우팅 세분화
     if "Spearhead Reference" in doc_name or "Spearhead Doubles" in doc_name:
-        return ("spearhead_db", cfg.RULE_PROMPT, RuleResult)  # 코어 룰 성격의 스피어헤드 문서
+        return ("rule_db", cfg.RULE_PROMPT, RuleResult)  # 코어 룰 성격의 스피어헤드 문서
     elif "Spearhead" in doc_name:
         return ("spearhead_db", cfg.SPEARHEAD_FACTION_PROMPT, SpearheadFactionResult)  # 팩션 전용 스피어헤드
 

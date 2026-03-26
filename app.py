@@ -194,14 +194,15 @@ THINKING_BUDGET = {
 ROUTER_PROMPT = """
 사용자의 질문을 분석하여 아래 5개 카테고리 중 가장 적합한 것을 하나만 선택하세요.
 - 질문에 포인트, 점수, 비용, points, 부대 편성 등의 단어가 있으면 무조건 balance_db 를 선택하세요.
-- 질문에 "스피어헤드", "뱅가드", "Vanguard", "Spearhead" 등의 단어가 있거나, 스피어헤드 고유 명칭이 포함되어 있으면 무조건 spearhead_db를 선택하세요.
-- 질문에 "의미", "뜻", "정의", "무엇인가요" 등의 단어가 있거나 특정 게임 용어/키워드(예: CAVALRY, WARD, STRIKE-FIRST 등)에 대한 설명을 요구하면 무조건 rule_db를 선택하세요.
-- 반드시 카테고리 이름(영문, 예: rule_db)만 출력하고 다른 텍스트는 절대 포함하지 마세요.
+- 질문에 "스피어헤드", "뱅가드" 단어가 있더라도, "규칙", "진행 순서", "게임 방법" 등 게임을 플레이하는 룰에 대한 질문이라면 무조건 rule_db를 선택하세요.
+- 반대로 특정 팩션의 스피어헤드 고유 명칭(예: Hurakan Vanguard), 유닛 스탯, 구성을 묻는다면 spearhead_db를 선택하세요.
+- 질문에 "의미", "뜻", "정의", "무엇인가요" 등 용어/키워드 설명을 요구하면 무조건 rule_db를 선택하세요.
+- 반드시 카테고리 이름(영문, 예: rule_db)만 출력하세요.
 
-rule_db      : 코어 룰, 용어집(Glossary), 키워드 정의, 일반적인 게임 메커니즘 (이동, 슈팅, 전투, 마법, 차지 등)
+rule_db      : 코어 룰, 용어집, 키워드 정의, 일반/스피어헤드 게임 진행 순서 및 메커니즘
 faction_db   : 특정 유닛의 스탯, 무기, 팩션 고유 능력, 워스크롤
 balance_db   : 유닛의 포인트 가격, 부대 편성 제한, 레지먼트
-spearhead_db : 스피어헤드 모드 전용 룰, 스피어헤드 세트 구성(warscrolls), 스피어헤드 고유 규칙(spearhead_rules)
+spearhead_db : 스피어헤드 모드 전용 룰, 스피어헤드 세트 구성(warscrolls), 팩션 고유 규칙(spearhead_rules)
 other_db     : 특수 캠페인 룰 (예: 기란의 재앙)
 
 사용자 질문: {query}"""
@@ -220,20 +221,20 @@ N_RESULTS = {
     "rule_db":      10,
     "faction_db":   15,
     "balance_db":   60,
-    "spearhead_db": 15,
+    "spearhead_db": 20,
     "other_db":     5,
 }
 
 SYSTEM_PROMPTS = {
     "rule_db": (
         "당신은 워해머 에이지 오브 지그마의 공인 심판입니다. "
-        "제공된 코어 룰 및 용어집(Glossary) 문서를 바탕으로 정확하게 한국어로 답변하세요. "
-        "▶ 용어/키워드 질문: 특정 키워드(예: CAVALRY, WARD)의 의미를 물어보면, 문서에서 해당 용어의 정확한 규칙적 정의와 효과를 보기 쉽게 설명해주세요. "
+        "제공된 코어 룰 및 용어집 문서를 바탕으로 정확하게 한국어로 답변하세요. "
+        "▶ 용어/키워드 질문: 특정 키워드의 의미를 물어보면 정의와 효과를 설명해주세요. "
+        "▶ 스피어헤드 룰 질문: 검색된 문서에 '일반 스피어헤드'와 '스피어헤드 더블즈' 규칙이 혼재되어 있다면, 임의로 하나만 골라 설명하지 마세요. 반드시 '일반 스피어헤드(1대1)와 스피어헤드 더블즈(다대다) 중 어떤 모드의 규칙을 알고 싶으신가요?'라고 먼저 되물어보세요. "
         "[절대 금지]: 제공된 문서에 질문과 직접 일치하는 내용이 없다면 다음 행동을 하지 마세요: "
         "(1) 기존 지식이나 외부 설정으로 답변 생성, "
-        "(2) 유사한 룰을 찾아 유추하거나 비유하는 설명, "
-        "(3) '~와 비슷하다', '~로 볼 수 있다'와 같은 간접 추론. "
-        "문서에 없으면 반드시 '제공된 문서에서 해당 정보를 찾을 수 없습니다. 정확한 규칙 이름이나 키워드를 다시 알려주시겠어요?'라고만 답하세요."
+        "(2) 유사한 룰을 찾아 유추하거나 비유하는 설명. "
+        "문서에 없으면 반드시 '제공된 문서에서 해당 정보를 찾을 수 없습니다'라고만 답하세요."
     ),
     "faction_db": (
         "당신은 워해머 에이지 오브 지그마의 팩션 전문가입니다. "
@@ -355,11 +356,12 @@ def rewrite_query_with_context(current_query: str, history: list, client) -> str
     # 최근 대화 4개(2턴) 정도만 문맥으로 사용
     history_text = ""
     recent_history = history[-5:1] if len(history) >= 5 else history[:-1]
+    print(recent_history)
 
     for msg in recent_history:
         role = "사용자" if msg["role"] == "user" else "AI 심판"
         # 내용이 너무 길면 자르기
-        content = msg["content"][:200] + "..." if len(msg['content']) > 200 else msg['cotent']
+        content = msg["content"][:200] + "..." if len(msg['content']) > 200 else msg['content']
         history_text += f"{role}: {content}\n"
 
     prompt = f"""당신은 워해머 에이지 오브 지그마 챗봇의 문맥 분석기입니다.
@@ -509,6 +511,9 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             query_embedding = embed_model.encode("query: " + _q).tolist()
             collection = collections[db_name]
 
+            print(f"search_query: {search_query}")
+            print(f"db_name: {db_name}")
+
             query_kwargs = dict(
                 query_embeddings=[query_embedding],
                 n_results=N_RESULTS[db_name],
@@ -539,8 +544,32 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                     query_kwargs["where"] = {"source": {"$ne": "rules_updates.json"}}
 
             results = collection.query(**query_kwargs)
+            #pprint.pp(results)
 
-            pprint.pp(results)
+            if db_name == "spearhead_db" and results["ids"] and len(results["ids"][0]) > 0:
+                try:
+                    # 검색된 결과들에서 출처 파일명(source)을 중복 없이 수집
+                    found_sources = list(set(
+                        meta.get("source", "") for meta in results["metadatas"][0]
+                        if meta.get("source", "").startswith("spearhead_")
+                    ))
+                    if found_sources:
+                        expanded_docs, expanded_metas, expanded_ids = [], [], []
+                        # 최대 2개의 박스(source)까지만 확장하여 통째로 불러옴
+                        for src in found_sources[:2]:
+                            box = collection.get(where={"source": src}, include=["documents", "metadatas"])
+                            if box["ids"]:
+                                expanded_docs.extend(box["documents"])
+                                expanded_metas.extend(box["metadatas"])
+                                expanded_ids.extend(box["ids"])
+
+                        # 싹쓸이한 결과를 원본 검색 결과에 덮어씌움
+                        if expanded_ids:
+                            results["documents"][0] = expanded_docs
+                            results["metadatas"][0] = expanded_metas
+                            results["ids"][0] = expanded_ids
+                except Exception:
+                    pass
 
             # 벡터 검색 결과에 search_query 키워드가 없으면 키워드 폴백 검색
             def _keyword_hit(docs: list, keyword: str) -> bool:
@@ -586,37 +615,28 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             if db_name == "faction_db" and search_query and not _keyword_hit(flat_docs, search_query):
                 try:
                     spearhead_col = collections["spearhead_db"]
-                    # 1차: 키워드 매칭
-                    sp_fallback = _fallback_search(spearhead_col, search_query,
-                                                   limit=10, warscroll_only=True)
-                    if not sp_fallback["ids"]:
-                        # 2차: faction 메타데이터로 필터링
-                        # search_query를 소문자+공백 정규화해서 faction 키와 매칭
-                        faction_hint = search_query.lower().replace("-", " ").strip()
-                        sp_by_faction = spearhead_col.get(
-                            query_embeddings=[query_embedding],
-                            where={"$and": [{"faction": {"$eq": faction_hint}}, {"type": {"$eq": "warscroll"}}]},
-                            include=["documents", "metadatas"],
-                            limit=20,
-                        )
-                        if sp_by_faction["ids"]:
-                            sp_fallback = sp_by_faction
+                    sp_fallback = {"ids": []}
 
-                    if not sp_fallback["ids"]:
-                        # 3차: warscroll 타입만 벡터 검색
-                        sp_vec = spearhead_col.query(
-                            query_embeddings=[query_embedding],
-                            n_results=10,
-                            where={"type": "warscroll"},
-                            include=["documents", "metadatas"],
-                        )
-                        sp_fallback["documents"] = sp_vec["documents"][0]
-                        sp_fallback["metadatas"] = sp_vec["metadatas"][0]
-                        sp_fallback["ids"] = sp_vec["ids"][0]
+                    # 1. 키워드로 아무 조각이나 하나 낚아채기 (_fallback_search는 1차원 리스트 반환)
+                    temp_search = _fallback_search(spearhead_col, search_query, limit=5, warscroll_only=False)
 
+                    if temp_search["ids"] and len(temp_search["ids"]) > 0:
+                        # 2. 낚아챈 첫 번째 조각의 출처 파일명(source) 확인 (1차원 접근)
+                        target_source = temp_search["metadatas"][0].get("source")
+
+                        if target_source:
+                            # 3. 해당 파일명을 가진 모든 유닛과 룰을 통째로 끌어오기!
+                            sp_fallback = spearhead_col.get(
+                                where={"source": target_source},
+                                include=["documents", "metadatas"]
+                            )
+
+                    # 4. 기존 결과 상단에 싹쓸이한 데이터 추가
                     if sp_fallback["ids"]:
                         results["documents"][0] = sp_fallback["documents"] + flat_docs
                         results["metadatas"][0] = sp_fallback["metadatas"] + results["metadatas"][0]
+                        # flat_docs 변수 갱신
+                        flat_docs = results["documents"][0]
                 except Exception:
                     pass
 
@@ -650,7 +670,17 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                     source = spearhead_name or meta.get("unit_name") or source_file
                     #sources_info.append(f"- {source}")
 
-                    display_name = spearhead_name or meta.get("unit_name") or "알수없음"
+                    display_name = (
+                            spearhead_name or
+                            meta.get("unit_name") or
+                            meta.get("category") or
+                            meta.get("section") or
+                            "규칙/설명"
+                    )
+                    # 보기 좋게 첫 글자 대문자로 변환 (영문일 경우)
+                    if isinstance(display_name, str):
+                        display_name = display_name.replace("_", " ").title()
+
                     sources_info.append(f"- {display_name} ({source_file})")
             else:
                 retrieved_context = "관련 문서를 찾을 수 없습니다."
