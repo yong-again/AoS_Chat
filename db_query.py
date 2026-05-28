@@ -43,12 +43,13 @@ collections = {
     for name in DB_LABELS
 }
 
-user_query = "루미네스 렐름로드의 스피어헤드 종류를 알려줘."
+user_query = "루미네스 렐름로드의 병력 종류를 알려줘."
 
 # 1. 라우터: '사용자의 원본 질문'으로 의도를 파악하여 DB 결정
 db_name = route_query(user_query, gemini_client)
-
-#print(db_name)
+print('-'*50)
+print("DB Name")
+print(f'{db_name}')
 
 # 2. 검색 쿼리 추출: 벡터 DB에 던질 '순수 영어 키워드'만 생성
 search_query = generate_search_query(user_query, db_name, gemini_client)
@@ -62,14 +63,19 @@ collection = collections[db_name]
 
 #pprint.pp(collection.get())
 # query_texts uses Chroma's default embedder (384-dim), not EMBED_MODEL (768).
-pprint.pp(collection.query(
-    query_embeddings=[query_embedding],
-    n_results=10,
-    where={"faction":faction_hint},
-    include=["documents", "metadatas", "distances"],
-))
+print('-'*50)
+print("Faction Hint")
+print(faction_hint)
 
-exit()
+print('-'*50)
+print("query embedding")
+pprint.pp(query_embedding)
+# pprint.pp(collection.query(
+#     query_embeddings=[query_embedding],
+#     n_results=10,
+#     where={"faction":faction_hint},
+#     include=["documents", "metadatas", "distances"],
+# ))
 
 N_RESULTS = {
     "rule_db":      5,
@@ -92,11 +98,13 @@ if db_name == "rule_db":
 
 results = collection.query(**query_kwargs)
 
-print(results)
+print('-'*50)
+print("Query Results")
+pprint.pp(results)
 
 
-for id in collections:
-    print(id)
+#for id in collections:
+    #pprint.pp(id)
 
 
 

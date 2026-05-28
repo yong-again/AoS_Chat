@@ -13,6 +13,7 @@ import re
 import tempfile
 from pathlib import Path
 from typing import Any
+from dotenv import dotenv_values
 
 
 def project_dir() -> Path:
@@ -100,3 +101,6 @@ def build_output_path(
     target_dir = ensure_dir(root / safe_filename(db_target))
     filename = safe_filename(doc_name) + ext
     return target_dir / filename
+
+def load_env(env_path: str = ".env") -> dict[str, str]:
+    return dotenv_values(env_path)

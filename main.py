@@ -20,11 +20,11 @@ from dotenv import dotenv_values
 from core.logging_config import get_logger, setup_logging
 from pipeline import process_aos_pipeline
 from pipeline.scraper import get_or_scrape_pdf_index
-from core.utils import default_cache_path, default_outputs_dir
+from core.utils import default_cache_path, default_outputs_dir, load_env
 
 log = get_logger(__name__)
 
-ENV_PATH = "/workspace/AoS_Chat/.env"
+ENV_PATH = "./.env"
 OUTPUT_DIR = str(default_outputs_dir())
 
 
@@ -63,7 +63,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    dotenv_values(ENV_PATH)  # .env 파일 존재 확인
+    load_env(ENV_PATH)  # .env 파일 존재 확인
 
     # 1단계: 스크래핑 또는 캐시 로드
     log.info("PDF 인덱스 로드 (force=%s) ...", args.force_scrape)

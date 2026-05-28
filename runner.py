@@ -36,7 +36,7 @@ if __name__ == "__main__":
     parser.add_argument("--keyword", type=str, default="Lumineth Realm-lords")
     args = parser.parse_args()
 
-    env_path = "/workspace/AoS_Chat/.env"
+    env_path = "./.env"
     _ = dotenv_values(env_path)  # env 파일 존재 확인용 (키는 pipeline 내부에서 다시 로드)
 
     data = get_or_scrape_pdf_index(cache_path=default_cache_path(), env_path=env_path, force=False)
@@ -45,5 +45,5 @@ if __name__ == "__main__":
     keyword = args.keyword
     single = build_single_doc_data(data, keyword=keyword)
 
-    process_aos_pipeline(pdf_data_dict=single, config_path=env_path, output_dir="/workspace/AoS_Chat/outputs", dry_run=False)
+    process_aos_pipeline(pdf_data_dict=single, config_path=env_path, output_dir="./outputs", dry_run=False)
 

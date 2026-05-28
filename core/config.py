@@ -26,7 +26,7 @@ DB_NAMES = ("rule_db", "faction_db", "balance_db", "spearhead_db", "other_db")
 
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_JSON_MIME = "application/json"
-GEMINI_TEMPERATURE = 0.1
+GEMINI_TEMPERATURE = 0.3
 API_DELAY_SECONDS = 5
 FILE_POLL_INTERVAL_SECONDS = 2
 
@@ -58,8 +58,7 @@ FACTION_PROMPT = """
    스피어헤드에서는 수치(Stats, Weapons)와 특수 능력(Abilities)이 완전히 다르게 재설정되어 있습니다.
 4. 스피어헤드의 워스크롤을 추출할 때 "본편과 동일" 등의 이유로 절대 생략하지 말고,
    스피어헤드 페이지에 적힌 고유의 능력치와 무기를 빠짐없이 독립적으로 추출해야 합니다.
-5. spearhead_name은 스피어헤드 고유 이름만 추출하고 팩션명은 절대 포함하지 마세요.
-   (예: "Vanari Bladelords", "Grundstok Trailblazers" — "Lumineth Realm-lords Vanari Bladelords" 형태 금지)
+5. [RECITATION 우회]: 각 능력(abilities), 무기 효과 등의 서술형 텍스트(effect 등)를 추출할 때, PDF 원문을 토씨 하나 틀리지 않고 똑같이 복사(Copy & Paste)하지 마세요. 반드시 의미가 훼손되지 않는 선에서 당신만의 표현으로 살짝 요약하거나 단어를 변경(Paraphrasing)하여 작성해야 합니다.
 """
 
 RULE_PROMPT = """

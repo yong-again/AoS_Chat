@@ -12,15 +12,13 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from dotenv import dotenv_values
 from firecrawl import FirecrawlApp
 
 from core import config as cfg
 from core.logging_config import get_logger
-from core.utils import load_json, save_json
+from core.utils import load_json, save_json, load_env
 
 log = get_logger(__name__)
-
 
 def fetch_markdown(url: str, *, firecrawl_api_key: str) -> str:
     app = FirecrawlApp(api_key=firecrawl_api_key)
@@ -69,7 +67,7 @@ def get_or_scrape_pdf_index(
         log.info("pdf index 캐시 사용: %s", cache_path)
         return load_json(cache_path)
 
-    config = dotenv_values(env_path)
+    config = load_env(env_path)
     markdown = fetch_markdown(cfg.AOS_DOWNLOADS_URL, firecrawl_api_key=config["FIRECRAWL_API_KEY"])
     data = parse_pdf_index(markdown)
 

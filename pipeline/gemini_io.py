@@ -144,6 +144,8 @@ def extract_json_with_gemini(
     """
 
     def _once() -> dict:
+        print(f"\n[INFO] Gemini 요청 시작: 파일({file.name})")
+        
         response = client.models.generate_content(
             model=cfg.GEMINI_MODEL,
             contents=[file, prompt],
@@ -151,14 +153,51 @@ def extract_json_with_gemini(
                 response_mime_type=cfg.GEMINI_JSON_MIME,
                 response_schema=schema_cls,
                 temperature=cfg.GEMINI_TEMPERATURE,
+                safety_settings=[
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                    types.SafetySetting(
+                        category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                    ),
+                ]
             ),
         )
-        return schema_cls.model_validate_json(response.text).model_dump()
-
+        
+        finish_reason = response.candidates[0].finish_reason if response.candidates else "N/A"
+        print(f"[INFO] Gemini 응답 완료! 종료 사유(Finish Reason): {finish_reason}")
+        
+        # Pydantic에 들어갈 'input text' 확인
+        input_text = response.text
+        
+        if not input_text:
+            print(f"\n[FATAL] Gemini가 텍스트를 하나도 생성하지 않았습니다!")
+            print(f"▶ 원본 응답 객체 전체: {response}")
+            raise ValueError(f"제미나이 응답(input text)이 비어있습니다. 사유: {finish_reason}")
+            
+        try:
+            return schema_cls.model_validate_json(input_text).model_dump()
+        except Exception as e:
+            print(f"\n[JSON 파싱 실패]")
+            print(f"▶ Pydantic에 들어간 Input Text (최대 1000자):\n{input_text[:1000]}")
+            if input_text and len(input_text) > 1000:
+                print(f"...\n▶ (마지막 500자):\n{input_text[-500:]}")
+            raise e
+        
     def _retry_if(exc: Exception) -> bool:
         if is_retryable_status(extract_status_code(exc)):
             return True
-        if isinstance(exc, (JSONDecodeError, ValidationError)):
+        if isinstance(exc, (JSONDecodeError, ValidationError, ValueError)):
             return True
         return False
 
