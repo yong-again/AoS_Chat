@@ -193,11 +193,14 @@ THINKING_BUDGET = {
 # ─── 라우터 프롬프트 ──────────────────────────────────────────────────────────
 ROUTER_PROMPT = """
 사용자의 질문을 분석하여 아래 5개 카테고리 중 가장 적합한 것을 하나만 선택하세요.
-- 질문에 포인트, 점수, 비용, points, 부대 편성 등의 단어가 있으면 무조건 balance_db 를 선택하세요.
-- 질문에 "스피어헤드", "뱅가드" 단어가 있더라도, "규칙", "진행 순서", "게임 방법" 등 게임을 플레이하는 룰에 대한 질문이라면 무조건 rule_db를 선택하세요.
-- 반대로 특정 팩션의 스피어헤드 고유 명칭(예: Hurakan Vanguard), 유닛 스탯, 구성을 묻는다면 spearhead_db를 선택하세요.
-- 질문에 "의미", "뜻", "정의", "무엇인가요" 등 용어/키워드 설명을 요구하면 무조건 rule_db를 선택하세요.
-- 반드시 카테고리 이름(영문, 예: rule_db)만 출력하세요.
+아래 규칙을 1번부터 순서대로 검사하여, 가장 먼저 해당하는 규칙 하나만 적용하세요.
+1. 질문에 포인트, 점수, 비용, points, 부대 편성 등 비용/편성 관련 단어가 있으면 balance_db.
+2. 질문에 "스피어헤드", "뱅가드" 단어가 있더라도, "규칙", "진행 순서", "게임 방법" 등 게임을 플레이하는 방식에 대한 질문이라면 rule_db.
+3. 특정 팩션의 스피어헤드 고유 명칭(예: Hurakan Vanguard)이나 스피어헤드 세트의 유닛 스탯, 구성을 묻는다면 spearhead_db.
+4. 룰 용어/키워드(예: Ward, Rend, 차지)의 "의미", "뜻", "정의"를 묻는다면 rule_db.
+   단, 특정 유닛이나 팩션에 대한 설명 요청("~가 무엇인가요?" 형태라도 대상이 유닛/팩션이면)은 faction_db.
+5. 위 규칙에 해당하지 않으면 아래 카테고리 설명 중 가장 적합한 것을 선택.
+반드시 카테고리 이름(영문, 예: rule_db)만 출력하세요.
 
 rule_db      : 코어 룰, 용어집, 키워드 정의, 일반/스피어헤드 게임 진행 순서 및 메커니즘
 faction_db   : 특정 유닛의 스탯, 무기, 팩션 고유 능력, 워스크롤
@@ -238,14 +241,14 @@ SYSTEM_PROMPTS = {
     ),
     "faction_db": (
         "당신은 워해머 에이지 오브 지그마의 팩션 전문가입니다. "
-        "제공된 JSON 데이터는 팩션 팩 또는 스피어헤드 데이터일 수 있습니다. "
-        "JSON 데이터의 unit_name 필드는 대문자로 저장되어 있습니다. 대소문자를 무시하고 매칭하세요. "
-        "▶ 특정 유닛 질문: stats(이동/저장/제어/체력), weapons(무기 프로필), abilities(특수 능력), keywords를 모두 정리해서 보여주세요. "
+        "제공된 JSON 데이터는 팩션 팩, 스피어헤드, wahapedia 워스크롤 데이터일 수 있습니다. "
+        "유닛 이름은 unit_name 또는 name 필드에 있으며 대문자/일반 표기가 혼재합니다. 대소문자를 무시하고 매칭하세요. "
+        "▶ 특정 유닛 질문: 스탯(이동/세이브/컨트롤/체력/워드), 무기 프로필(ranged_weapons/melee_weapons 또는 weapons), abilities(특수 능력), keywords를 모두 정리해서 보여주세요. "
         "   데이터 출처가 스피어헤드인 경우 '이 정보는 스피어헤드 데이터 기준입니다'라고 명시하세요. "
-        "▶ 팩션 유닛 목록/종류 질문: JSON 데이터에 있는 모든 유닛의 unit_name을 목록으로 나열하세요. "
-        "   단, type이 'warscroll'인 항목만 유닛으로 취급하고, 능력/주문/룰은 유닛이 아닙니다. "
+        "▶ 팩션 유닛 목록/종류 질문: 스탯과 무기 프로필을 갖춘 워스크롤 형태의 JSON 항목만 유닛으로 취급하여 이름을 목록으로 나열하세요. "
+        "   능력/주문/룰만 서술된 항목은 유닛이 아닙니다. "
         "[절대 금지]: 제공된 JSON에 없는 유닛을 유추하거나, 다른 팩션 데이터로 대답하거나, 외부 지식으로 정보를 보충하지 마세요. "
-        "제공된 JSON 데이터에 warscroll 타입 항목이 없을 때만 '찾지 못했습니다'라고 하세요."
+        "제공된 JSON 데이터에 워스크롤 형태의 항목이 없을 때만 '찾지 못했습니다'라고 하세요."
     ),
     "balance_db": (
         "당신은 워해머 에이지 오브 지그마의 포인트 및 편성 전문가입니다. "
@@ -311,6 +314,20 @@ def generate_search_query(query: str, db_name: str, client) -> str:
        - 카하드론 오버로드 → KHARADRON OVERLORDS
        - 아이언조즈 → IRONJAWZ
        - 오러크스 앤 고블린스 → ORRUK WARCLANS
+       - 스톰캐스트 → STORMCAST ETERNALS
+       - 시티즈 오브 지그마 → CITIES OF SIGMAR
+       - 아이도네스 딥킨 → IDONETH DEEPKIN
+       - 슬레이브즈 투 다크니스 → SLAVES TO DARKNESS
+       - 블레이즈 오브 코른(코른의 칼날들) → BLADES OF KHORNE
+       - 스케이븐 → SKAVEN
+       - 비스츠 오브 카오스 → BEASTS OF CHAOS
+       - 헬스미스 오브 하슈트 → HELSMITHS OF HASHUT
+       - 소울블라이트 그레이브로드 → SOULBLIGHT GRAVELORDS
+       - 플레쉬이터 코트 → FLESH-EATER COURTS
+       - 크룰보이즈 → KRULEBOYZ
+       - 글룸스파이트 깃츠 → GLOOMSPITE GITZ
+       - 선즈 오브 베헤마트 → SONS OF BEHEMAT
+       - 본스플리터즈 → BONESPLITTERZ
     5. 한국어 서술어는 모두 제거하세요.
 
     예시: grundstok trailblazers에 대해 알고 싶어 -> Grundstok Trailblazers
@@ -353,10 +370,9 @@ def rewrite_query_with_context(current_query: str, history: list, client) -> str
     if len(history) <= 1:
         return current_query
 
-    # 최근 대화 4개(2턴) 정도만 문맥으로 사용
+    # 최근 대화 4개(2턴) 정도만 문맥으로 사용 (마지막 항목은 현재 질문이므로 제외)
     history_text = ""
-    recent_history = history[-5:1] if len(history) >= 5 else history[:-1]
-    print(recent_history)
+    recent_history = history[-5:-1] if len(history) >= 5 else history[:-1]
 
     for msg in recent_history:
         role = "사용자" if msg["role"] == "user" else "AI 심판"
@@ -378,9 +394,9 @@ def rewrite_query_with_context(current_query: str, history: list, client) -> str
     [재작성된 질문]
 """
     try:
-        response = client.model.generate_content(
+        response = client.models.generate_content(
             model=ROUTER_MODEL,
-            content=prompt,
+            contents=prompt,
             config=types.GenerateContentConfig(temperature=0.0),
         )
         return response.text.strip()
@@ -528,20 +544,21 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 "sylvaneth", "daughters of khaine", "kharadron overlords",
                 "ironjawz", "orruk warclans", "gloomspite gitz", "slaves to darkness",
                 "soulblight gravelords", "flesh eater courts", "cities of sigmar",
-                "kruleboyz", "skaven", "blades of khorne", "idonneth deepkin"
+                "kruleboyz", "skaven", "blades of khorne", "idoneth deepkin",
+                "beasts of chaos", "helsmiths of hashut", "sons of behemat",
+                "bonesplitterz",
             ]
 
             if faction_hint in KNOWN_FACTIONS:
                 query_kwargs["where"] = {"faction": faction_hint}
 
-            # rule_db: 패치 포함 여부에 따라 소스 필터 적용
+            # rule_db: 패치 포함 여부에 따라 소스 필터 적용 (FAQ/Errata 성격 문서 제외)
             if db_name == "rule_db" and not include_patch:
+                patch_filter = {"source": {"$nin": ["rules_updates.json", "wahapedia_faqs.json"]}}
                 if "where" in query_kwargs:
-                    query_kwargs["where"] = {
-                        "$and": [query_kwargs["where"], {"source": {"$ne": "rules_updates.json"}}]
-                    }
+                    query_kwargs["where"] = {"$and": [query_kwargs["where"], patch_filter]}
                 else:
-                    query_kwargs["where"] = {"source": {"$ne": "rules_updates.json"}}
+                    query_kwargs["where"] = patch_filter
 
             results = collection.query(**query_kwargs)
             #pprint.pp(results)
@@ -686,10 +703,11 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 retrieved_context = "관련 문서를 찾을 수 없습니다."
 
             # 5. 에이전틱 루프: RAG 컨텍스트 + Tool Use
+            # 답변 모델은 대화 이력을 받지 않으므로, 문맥이 반영된 재작성 질문을 전달
             user_prompt_text = (
                 f"[검색 키워드 힌트: '{search_query}']\n\n"
                 f"[참고 규칙]\n{retrieved_context}\n"
-                f"사용자 질문: {user_query}"
+                f"사용자 질문: {rewritten_query}"
             )
             contents = [
                 types.Content(role="user",

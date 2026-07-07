@@ -27,6 +27,18 @@ data.json
 *.cache
 debug_output/
 
+# Wahapedia 스크래핑 캐시 (pipeline.wahapedia* 로 재생성 가능)
+warscolls/
+wahapedia_rules/
+wahapedia_factions/
+
+# Wahapedia CSV export 데이터
+csv_file/
+
+# Scratch files
+temp.py
+temp.ipynb
+
 # DB dump folders (generated JSON from pipeline)
 *_db/
 pearhead_db/

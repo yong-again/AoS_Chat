@@ -17,8 +17,104 @@ if _env.get("HF_TOKEN"):
 
 # 설정 경로
 OUTPUT_DIR = Path("./outputs")
+WARSCROLLS_DIR = Path("./warscolls")  # pipeline.wahapedia 스크래핑 결과
 DB_PATH = "./my_warhammer_db"
 EMBEDDING_MODEL_NAME = 'intfloat/multilingual-e5-base'
+
+
+def load_wahapedia_warscrolls(collection, embed_model):
+    """warscolls/<slug>.json(pipeline.wahapedia 캐시)을 faction_db에 적재.
+
+    기존 faction_db 청크와 동일한 스키마(type=warscroll, faction, unit_name)를
+    사용하므로 app.py의 팩션 필터/키워드 폴백 검색에 그대로 걸린다.
+    source는 "wahapedia_<slug>.json"으로 구분한다.
+    """
+    if not WARSCROLLS_DIR.exists():
+        log.warning("warscolls 폴더가 없습니다 스킵: %s (python -m pipeline.wahapedia 로 생성)", WARSCROLLS_DIR)
+        return
+
+    files = sorted(WARSCROLLS_DIR.glob("*.json"))
+    if not files:
+        log.warning("warscolls 폴더에 JSON이 없습니다 스킵: %s", WARSCROLLS_DIR)
+        return
+
+    for filepath in tqdm(files, desc="적재 중 [faction_db/wahapedia]"):
+        with open(filepath, "r", encoding="utf-8") as f:
+            warscrolls = json.load(f)
+
+        slug = filepath.stem
+        source_file = f"wahapedia_{slug}.json"
+        # 기존 faction_db 메타데이터와 같은 표기: "lumineth realm lords"
+        faction_key = slug.replace("-", " ").strip()
+
+        docs = []
+        metadatas = []
+        ids = []
+        for idx, unit in enumerate(warscrolls):
+            # 스탯 없는 항목은 워스크롤 없이 링크만 있는 Regiments of Renown 참조 블록
+            if not unit.get("move") and not unit.get("health") and not unit.get("abilities"):
+                continue
+            docs.append(json.dumps(unit, ensure_ascii=False))
+            metadatas.append({
+                "source": source_file,
+                "faction": faction_key,
+                "type": "warscroll",
+                "unit_name": unit.get("name", f"unit_{idx}"),
+            })
+            ids.append(f"{source_file}_warscroll_{idx}")
+
+        if docs:
+            embeddings = embed_model.encode(["passage: " + d for d in docs]).tolist()
+            collection.add(
+                documents=docs,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                ids=ids,
+            )
+
+
+def load_wahapedia_rules(collection, embed_model):
+    """wahapedia_rules/<slug>.json(pipeline.wahapedia_rules 캐시)을 rule_db에 적재."""
+    from pipeline.wahapedia_rules import DATA_DIR as RULES_DIR, chunk_payload
+
+    if not RULES_DIR.exists():
+        log.warning("wahapedia_rules 폴더가 없습니다 스킵: %s (python -m pipeline.wahapedia_rules 로 생성)", RULES_DIR)
+        return
+
+    files = sorted(RULES_DIR.glob("*.json"))
+    for filepath in tqdm(files, desc="적재 중 [rule_db/wahapedia]"):
+        docs, metadatas, ids = chunk_payload(filepath)
+        if docs:
+            embeddings = embed_model.encode(["passage: " + d for d in docs]).tolist()
+            collection.add(
+                documents=docs,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                ids=ids,
+            )
+
+
+def load_wahapedia_faction_rules(collections, embed_model):
+    """wahapedia_factions/<slug>.json을 faction_db/spearhead_db에 나눠 적재."""
+    from pipeline.wahapedia_factions import DATA_DIR as FACTIONS_DIR
+    from pipeline.wahapedia_factions import chunk_payload as faction_chunk_payload
+
+    if not FACTIONS_DIR.exists():
+        log.warning("wahapedia_factions 폴더가 없습니다 스킵: %s (python -m pipeline.wahapedia_factions 로 생성)", FACTIONS_DIR)
+        return
+
+    files = sorted(FACTIONS_DIR.glob("*.json"))
+    for filepath in tqdm(files, desc="적재 중 [faction/spearhead_db/wahapedia]"):
+        payload = faction_chunk_payload(filepath)
+        for db_name, (docs, metadatas, ids) in payload.items():
+            if docs:
+                embeddings = embed_model.encode(["passage: " + d for d in docs]).tolist()
+                collections[db_name].add(
+                    documents=docs,
+                    embeddings=embeddings,
+                    metadatas=metadatas,
+                    ids=ids,
+                )
 
 def build_database():
     log.info("임베딩 모델 로드 중: %s", EMBEDDING_MODEL_NAME)
@@ -145,6 +241,15 @@ def build_database():
                     metadatas=metadatas,
                     ids=ids
                 )
+
+    # wahapedia warscroll 데이터를 faction_db에 추가 적재
+    load_wahapedia_warscrolls(collections["faction_db"], embed_model)
+
+    # wahapedia The Rules 데이터를 rule_db에 추가 적재
+    load_wahapedia_rules(collections["rule_db"], embed_model)
+
+    # wahapedia 팩션 룰/스피어헤드 룰을 faction_db/spearhead_db에 추가 적재
+    load_wahapedia_faction_rules(collections, embed_model)
 
     log.info("=== 모든 데이터베이스 구축이 성공적으로 완료되었습니다 ===")
 
