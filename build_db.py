@@ -25,10 +25,13 @@ EMBEDDING_MODEL_NAME = 'intfloat/multilingual-e5-base'
 def load_wahapedia_warscrolls(collection, embed_model):
     """warscolls/<slug>.json(pipeline.wahapedia 캐시)을 faction_db에 적재.
 
-    기존 faction_db 청크와 동일한 스키마(type=warscroll, faction, unit_name)를
-    사용하므로 app.py의 팩션 필터/키워드 폴백 검색에 그대로 걸린다.
+    기존 faction_db 청크와 동일한 스키마(type=warscroll, faction, unit_name)에
+    유닛 카테고리(role) 메타데이터를 더해 사용하므로 app.py의 팩션 필터/
+    키워드 폴백 검색/유닛 목록 주입에 그대로 걸린다.
     source는 "wahapedia_<slug>.json"으로 구분한다.
     """
+    from pipeline.wahapedia import chunk_payload as warscroll_chunk_payload
+
     if not WARSCROLLS_DIR.exists():
         log.warning("warscolls 폴더가 없습니다 스킵: %s (python -m pipeline.wahapedia 로 생성)", WARSCROLLS_DIR)
         return
@@ -39,32 +42,10 @@ def load_wahapedia_warscrolls(collection, embed_model):
         return
 
     for filepath in tqdm(files, desc="적재 중 [faction_db/wahapedia]"):
-        with open(filepath, "r", encoding="utf-8") as f:
-            warscrolls = json.load(f)
-
-        slug = filepath.stem
-        source_file = f"wahapedia_{slug}.json"
-        # 기존 faction_db 메타데이터와 같은 표기: "lumineth realm lords"
-        faction_key = slug.replace("-", " ").strip()
-
-        docs = []
-        metadatas = []
-        ids = []
-        for idx, unit in enumerate(warscrolls):
-            # 스탯 없는 항목은 워스크롤 없이 링크만 있는 Regiments of Renown 참조 블록
-            if not unit.get("move") and not unit.get("health") and not unit.get("abilities"):
-                continue
-            docs.append(json.dumps(unit, ensure_ascii=False))
-            metadatas.append({
-                "source": source_file,
-                "faction": faction_key,
-                "type": "warscroll",
-                "unit_name": unit.get("name", f"unit_{idx}"),
-            })
-            ids.append(f"{source_file}_warscroll_{idx}")
-
+        docs, embed_texts, metadatas, ids = warscroll_chunk_payload(filepath)
         if docs:
-            embeddings = embed_model.encode(["passage: " + d for d in docs]).tolist()
+            # 임베딩은 자연어 요약으로, 문서는 전체 JSON으로 저장
+            embeddings = embed_model.encode(["passage: " + t for t in embed_texts]).tolist()
             collection.add(
                 documents=docs,
                 embeddings=embeddings,
@@ -115,6 +96,24 @@ def load_wahapedia_faction_rules(collections, embed_model):
                     metadatas=metadatas,
                     ids=ids,
                 )
+
+def _iter_rule_chunks(node, path: str = "", max_chars: int = 2000):
+    """rule_db/other_db JSON을 검색 가능한 크기의 리프 항목 단위로 재귀 분할.
+
+    직렬화 크기가 max_chars 이하면 그대로 청크로 내보내고,
+    크면 dict는 키별로, list는 항목별로 내려가며 섹션 경로를 누적한다.
+    """
+    text = json.dumps(node, ensure_ascii=False)
+    if len(text) <= max_chars or not isinstance(node, (dict, list)):
+        yield path, text
+        return
+    if isinstance(node, dict):
+        for key, val in node.items():
+            yield from _iter_rule_chunks(val, f"{path} > {key}" if path else str(key), max_chars)
+    else:
+        for item in node:
+            yield from _iter_rule_chunks(item, path, max_chars)
+
 
 def build_database():
     log.info("임베딩 모델 로드 중: %s", EMBEDDING_MODEL_NAME)
@@ -218,19 +217,16 @@ def build_database():
                         ids.append(f"{source_file}_point_{idx}")
                     
             # 3. 코어 룰 & 기타 특수 문서 청킹
+            # 최상위 키 단위 청킹은 코어 룰 전체(10만 자+)가 청크 하나가 되어
+            # 임베딩(512토큰)이 앞부분만 반영하므로, 리프 항목 단위로 재귀 분할
             else:
-                if isinstance(data, dict):
-                    for key, val in data.items():
-                        doc_text = json.dumps(val, ensure_ascii=False)
-                        docs.append(doc_text)
-                        metadatas.append({"source": source_file, "type": "core_or_other", "section": key})
-                        ids.append(f"{source_file}_{key}")
-                elif isinstance(data, list):
-                    for idx, val in enumerate(data):
-                        doc_text = json.dumps(val, ensure_ascii=False)
-                        docs.append(doc_text)
-                        metadatas.append({"source": source_file, "type": "core_or_other"})
-                        ids.append(f"{source_file}_{idx}")
+                for idx, (sec_path, doc_text) in enumerate(_iter_rule_chunks(data)):
+                    docs.append(doc_text)
+                    meta = {"source": source_file, "type": "core_or_other"}
+                    if sec_path:
+                        meta["section"] = sec_path
+                    metadatas.append(meta)
+                    ids.append(f"{source_file}_{idx}")
 
             # 추출된 청크들을 임베딩하여 컬렉션에 추가
             if docs:

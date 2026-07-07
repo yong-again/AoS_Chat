@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from datetime import datetime
 import streamlit as st
 import chromadb
@@ -70,7 +71,7 @@ def list_saved_sessions() -> list[dict]:
             continue
     return sessions
 
-st.set_page_config(page_title="Warhammer AI 룰마스터", page_icon="⚔️", layout="centered")
+st.set_page_config(page_title="Warhammer AI 룰마스터", page_icon="⚔️", layout="wide")
 
 # ─── 테마 CSS ─────────────────────────────────────────────────────────────────
 def inject_theme():
@@ -83,6 +84,15 @@ def inject_theme():
         background-color: #0f0d0a;
         background-image:
             radial-gradient(ellipse at top, #1a1208 0%, #0f0d0a 60%);
+    }
+
+    /* 메인(채팅) 영역: wide 레이아웃에서 최대폭을 제한해 가독성 유지 */
+    div.block-container,
+    [data-testid="stMainBlockContainer"] {
+        max-width: 1100px !important;
+        margin: 0 auto;
+        padding-left: 2rem;
+        padding-right: 2rem;
     }
 
     /* 제목 */
@@ -100,14 +110,38 @@ def inject_theme():
         letter-spacing: 0.04em;
     }
 
-    /* 사이드바 */
+    /* 사이드바: 폭을 고정해 위젯 겹침 방지 */
     section[data-testid="stSidebar"] {
         background-color: #130f08 !important;
         border-right: 1px solid #3a2c10;
+        min-width: 330px !important;
+        max-width: 330px !important;
     }
     section[data-testid="stSidebar"] * {
-        font-family: 'Cinzel', serif !important;
         color: #c9a84c !important;
+    }
+    /* 장식 폰트는 제목/라벨/본문 텍스트에만 적용
+       (입력 위젯 내부까지 적용하면 letter-spacing 때문에 글자가 겹침) */
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3,
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] summary {
+        font-family: 'Cinzel', serif !important;
+        letter-spacing: 0.02em;
+    }
+    /* 입력/선택/버튼 위젯 내부는 기본 폰트·자간 유지 + 줄바꿈 허용 */
+    section[data-testid="stSidebar"] input,
+    section[data-testid="stSidebar"] [data-baseweb="select"] *,
+    section[data-testid="stSidebar"] button {
+        font-family: sans-serif !important;
+        letter-spacing: normal !important;
+    }
+    section[data-testid="stSidebar"] .stButton button,
+    section[data-testid="stSidebar"] .stDownloadButton button {
+        width: 100%;
+        white-space: normal;
     }
 
     /* 채팅 입력창 */
@@ -210,6 +244,13 @@ other_db     : 특수 캠페인 룰 (예: 기란의 재앙)
 
 사용자 질문: {query}"""
 
+# 현행 GHB 시즌. 과거 시즌 소스는 기본 검색에서 제외 (사이드바 토글로 포함 가능)
+CURRENT_GHB_SEASON = "2026-27"
+OLD_GHB_SOURCES = [
+    "wahapedia_general-s-handbook-2024-25.json",
+    "wahapedia_general-s-handbook-2025-26.json",
+]
+
 # ─── DB별 설정 ────────────────────────────────────────────────────────────────
 DB_LABELS = {
     "rule_db":      "📖 코어 룰",
@@ -245,8 +286,8 @@ SYSTEM_PROMPTS = {
         "유닛 이름은 unit_name 또는 name 필드에 있으며 대문자/일반 표기가 혼재합니다. 대소문자를 무시하고 매칭하세요. "
         "▶ 특정 유닛 질문: 스탯(이동/세이브/컨트롤/체력/워드), 무기 프로필(ranged_weapons/melee_weapons 또는 weapons), abilities(특수 능력), keywords를 모두 정리해서 보여주세요. "
         "   데이터 출처가 스피어헤드인 경우 '이 정보는 스피어헤드 데이터 기준입니다'라고 명시하세요. "
-        "▶ 팩션 유닛 목록/종류 질문: 스탯과 무기 프로필을 갖춘 워스크롤 형태의 JSON 항목만 유닛으로 취급하여 이름을 목록으로 나열하세요. "
-        "   능력/주문/룰만 서술된 항목은 유닛이 아닙니다. "
+        "▶ 팩션 유닛 목록/종류 질문: '전체 유닛(워스크롤) 목록' 문서가 제공되면 그 문서의 카테고리 구분(영웅/보병/기병/괴수 등)을 유지하여 카테고리별 소제목 아래 빠짐없이 나열하세요. "
+        "   그런 문서가 없으면 스탯과 무기 프로필을 갖춘 워스크롤 형태의 JSON 항목만 유닛으로 취급하고, 능력/주문/룰만 서술된 항목은 유닛이 아닙니다. "
         "[절대 금지]: 제공된 JSON에 없는 유닛을 유추하거나, 다른 팩션 데이터로 대답하거나, 외부 지식으로 정보를 보충하지 마세요. "
         "제공된 JSON 데이터에 워스크롤 형태의 항목이 없을 때만 '찾지 못했습니다'라고 하세요."
     ),
@@ -421,6 +462,11 @@ include_patch = st.sidebar.checkbox(
     value=True,
     help="체크하면 rule_db 검색 시 rules_updates 문서도 포함합니다.",
 )
+include_old_ghb = st.sidebar.checkbox(
+    "과거 시즌 GHB 포함",
+    value=False,
+    help=f"체크하면 {CURRENT_GHB_SEASON} 이전 제너럴스 핸드북 규칙도 검색합니다.",
+)
 
 # ─── 채팅 내역 관리 사이드바 ─────────────────────────────────────────────────
 st.sidebar.divider()
@@ -552,16 +598,74 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             if faction_hint in KNOWN_FACTIONS:
                 query_kwargs["where"] = {"faction": faction_hint}
 
-            # rule_db: 패치 포함 여부에 따라 소스 필터 적용 (FAQ/Errata 성격 문서 제외)
-            if db_name == "rule_db" and not include_patch:
-                patch_filter = {"source": {"$nin": ["rules_updates.json", "wahapedia_faqs.json"]}}
-                if "where" in query_kwargs:
-                    query_kwargs["where"] = {"$and": [query_kwargs["where"], patch_filter]}
-                else:
-                    query_kwargs["where"] = patch_filter
+            # rule_db: 소스 제외 필터 (패치/에라타, 과거 시즌 GHB)
+            if db_name == "rule_db":
+                excluded_sources = []
+                if not include_patch:
+                    excluded_sources += ["rules_updates.json", "wahapedia_faqs.json"]
+                if not include_old_ghb:
+                    excluded_sources += OLD_GHB_SOURCES
+                if excluded_sources:
+                    src_filter = {"source": {"$nin": excluded_sources}}
+                    if "where" in query_kwargs:
+                        query_kwargs["where"] = {"$and": [query_kwargs["where"], src_filter]}
+                    else:
+                        query_kwargs["where"] = src_filter
 
             results = collection.query(**query_kwargs)
             #pprint.pp(results)
+
+            # faction_db + 팩션 특정 시: 전체 유닛 목록을 합성 문서로 주입.
+            # 상위 N 유사도 검색은 룰 청크에 밀려 유닛을 놓치고, 애초에 전체
+            # 목록을 만들 수 없으므로 메타데이터(unit_name) 전수 조회로 보강.
+            if db_name == "faction_db" and faction_hint in KNOWN_FACTIONS:
+                try:
+                    roster = collection.get(
+                        where={"$and": [{"faction": faction_hint}, {"type": "warscroll"}]},
+                        include=["metadatas"],
+                    )
+                    seen = {}
+                    for meta in roster["metadatas"]:
+                        name = (meta.get("unit_name") or "").strip()
+                        role = (meta.get("role") or "").strip()
+                        # 출처별 표기 차이(대소문자/구두점) 무시하고 중복 제거.
+                        # role 정보가 있는 항목(wahapedia)을 우선 사용
+                        key = re.sub(r"[^A-Z0-9]+", " ", name.upper()).strip()
+                        if key and (key not in seen or (role and not seen[key][1])):
+                            seen[key] = (name, role)
+                    if seen:
+                        ROLE_LABELS = [
+                            ("Hero", "영웅 (Hero)"),
+                            ("Infantry", "보병 (Infantry)"),
+                            ("Cavalry", "기병 (Cavalry)"),
+                            ("Monster", "괴수 (Monster)"),
+                            ("Beast", "야수 (Beast)"),
+                            ("War Machine", "워 머신 (War Machine)"),
+                            ("Manifestation", "마법 현현 (Manifestation)"),
+                            ("Faction Terrain", "팩션 지형 (Faction Terrain)"),
+                            ("Regiment of Renown", "유명 연대 (Regiments of Renown)"),
+                            ("Other", "기타"),
+                        ]
+                        groups = {}
+                        for name, role in seen.values():
+                            groups.setdefault(role or "Other", []).append(name)
+                        lines = [
+                            f"{faction_hint.upper()} 팩션의 전체 유닛(워스크롤) 목록"
+                            f" (총 {len(seen)}개, 카테고리별):"
+                        ]
+                        for role, label in ROLE_LABELS:
+                            if groups.get(role):
+                                lines.append(f"- {label}: " + ", ".join(sorted(groups[role])))
+                        roster_doc = "\n".join(lines)
+                        results["documents"][0].insert(0, roster_doc)
+                        results["metadatas"][0].insert(0, {
+                            "source": "faction_unit_roster",
+                            "faction": faction_hint,
+                            "type": "unit_roster",
+                        })
+                        results["ids"][0].insert(0, f"unit_roster_{faction_hint}")
+                except Exception:
+                    pass
 
             if db_name == "spearhead_db" and results["ids"] and len(results["ids"][0]) > 0:
                 try:
@@ -614,7 +718,16 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 return {"ids": [], "documents": [], "metadatas": []}
 
             flat_docs = results["documents"][0] if results["ids"] and results["ids"][0] else []
-            if search_query and not _keyword_hit(flat_docs, search_query):
+            # 특정 유닛 질의(faction_hint가 팩션명이 아닌 경우)인데 결과에
+            # 워스크롤 청크가 하나도 없으면, 룰 청크가 유닛명을 언급해서
+            # _keyword_hit이 통과하더라도 워스크롤 폴백을 강제한다.
+            flat_metas = results["metadatas"][0] if results["ids"] and results["ids"][0] else []
+            force_warscroll_fallback = (
+                db_name == "faction_db"
+                and faction_hint not in KNOWN_FACTIONS
+                and not any((m or {}).get("type") == "warscroll" for m in flat_metas)
+            )
+            if search_query and (not _keyword_hit(flat_docs, search_query) or force_warscroll_fallback):
                 try:
                     warscroll_only = db_name in ("faction_db", "spearhead_db")
                     fallback = _fallback_search(collection, search_query,

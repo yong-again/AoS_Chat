@@ -51,10 +51,10 @@ RULES_PAGES: dict[str, dict] = {
     "quick-start-guide": {"name": "Quick Start Guide", "category": "quick_start", "default": True},
     "the-core-rules": {"name": "The Core Rules", "category": "core_rules", "default": True},
     "faqs": {"name": "FAQs", "category": "faq", "default": True},
-    # General's Handbooks
-    "general-s-handbook-2024-25": {"name": "General's Handbook 2024-25", "category": "generals_handbook", "default": True},
-    "general-s-handbook-2025-26": {"name": "General's Handbook 2025-26", "category": "generals_handbook", "default": True},
-    "general-s-handbook-2026-27": {"name": "General's Handbook 2026-27", "category": "generals_handbook", "default": True},
+    # General's Handbooks (season 메타데이터로 앱에서 현행/과거 시즌 필터)
+    "general-s-handbook-2024-25": {"name": "General's Handbook 2024-25", "category": "generals_handbook", "season": "2024-25", "default": True},
+    "general-s-handbook-2025-26": {"name": "General's Handbook 2025-26", "category": "generals_handbook", "season": "2025-26", "default": True},
+    "general-s-handbook-2026-27": {"name": "General's Handbook 2026-27", "category": "generals_handbook", "season": "2026-27", "default": True},
     # Spearhead Battlepack
     "fire-and-jade": {"name": "Fire and Jade", "category": "spearhead_battlepack", "default": True},
     "sand-and-bone": {"name": "Sand and Bone", "category": "spearhead_battlepack", "default": True},
@@ -77,7 +77,7 @@ NOISE_SELECTORS = (
 )
 SKIP_SECTIONS = {"Books"}   # 책 구매/개정 이력 테이블 — 룰 내용 아님
 MIN_CHUNK_CHARS = 40        # 목차 조각/빈 섹션 버리는 기준
-MAX_CHUNK_CHARS = 3000      # 이보다 길면 문장 경계에서 분할
+MAX_CHUNK_CHARS = 1800      # 이보다 길면 문장 경계에서 분할 (e5-base 512토큰 한계 내)
 
 
 def _norm(text: str) -> str:
@@ -227,20 +227,23 @@ def chunk_payload(filepath: Path) -> tuple[list[str], list[dict], list[str]]:
     """
     chunks = load_json(filepath)
     source_file = f"wahapedia_{filepath.stem}.json"
+    season = (RULES_PAGES.get(filepath.stem) or {}).get("season")
     docs = [
         f"[{c['page']} | {c['section']}] {c['text']}" if c["section"] else f"[{c['page']}] {c['text']}"
         for c in chunks
     ]
-    metadatas = [
-        {
+    metadatas = []
+    for c in chunks:
+        meta = {
             "source": source_file,
             "type": "rule",
             "category": c["category"],
             "page": c["page"],
             "section": c["section"] or c["page"],
         }
-        for c in chunks
-    ]
+        if season:
+            meta["season"] = season
+        metadatas.append(meta)
     ids = [f"{source_file}_rule_{i}" for i in range(len(chunks))]
     return docs, metadatas, ids
 

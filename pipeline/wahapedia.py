@@ -247,6 +247,143 @@ def cache_path(faction_slug: str) -> Path:
     return DATA_DIR / f"{faction_slug}.json"
 
 
+# 유닛 카테고리(role) 도출 우선순위: 앞에 있는 키워드가 먼저 매칭됨
+ROLE_PRIORITY = (
+    ("FACTION TERRAIN", "Faction Terrain"),
+    ("MANIFESTATION", "Manifestation"),
+    ("ENDLESS SPELL", "Manifestation"),
+    ("INVOCATION", "Manifestation"),
+    ("HERO", "Hero"),
+    ("MONSTER", "Monster"),
+    ("WAR MACHINE", "War Machine"),
+    ("CAVALRY", "Cavalry"),
+    ("BEAST", "Beast"),
+    ("INFANTRY", "Infantry"),
+)
+
+
+def unit_role(keywords: list[str]) -> str:
+    """워스크롤 keywords에서 유닛 카테고리(Hero/Infantry/...)를 도출."""
+    kws = {k.upper() for k in keywords}
+    for kw, role in ROLE_PRIORITY:
+        if kw in kws:
+            return role
+    return "Other"
+
+
+EMBED_TEXT_MAX_CHARS = 1800  # e5-base 512토큰 한계 안에 들어오는 크기
+
+
+def unit_embed_text(unit: dict, role: str) -> str:
+    """임베딩용 자연어 요약. 전체 JSON을 임베딩하면 512토큰 초과분
+    (뒷부분 어빌리티·키워드)이 벡터에 반영되지 않으므로, 검색에 중요한
+    정보(이름/팩션/역할/키워드/어빌리티)를 앞쪽에 배치한 요약을 쓴다.
+    저장용 문서(documents)는 그대로 전체 JSON을 유지한다."""
+    parts = [f"{unit.get('name', '')} — {unit.get('faction', '')} {role}."]
+    if unit.get("keywords"):
+        parts.append("Keywords: " + ", ".join(unit["keywords"]) + ".")
+    stats = ", ".join(
+        f"{label} {unit[key]}"
+        for label, key in (("Move", "move"), ("Health", "health"), ("Save", "save"),
+                           ("Control", "control"), ("Ward", "ward"))
+        if unit.get(key)
+    )
+    if stats:
+        parts.append(stats + ".")
+    if unit.get("points"):
+        parts.append(f"Points {unit['points']}.")
+    weapons = [w.get("name", "") for w in
+               (unit.get("ranged_weapons") or []) + (unit.get("melee_weapons") or [])]
+    if weapons:
+        parts.append("Weapons: " + ", ".join(w for w in weapons if w) + ".")
+    for ab in unit.get("abilities") or []:
+        name = (ab.get("name") or "").strip()
+        effect = (ab.get("effect") or "").strip()
+        if name or effect:
+            parts.append(f"{name}: {effect}")
+    return " ".join(parts)[:EMBED_TEXT_MAX_CHARS]
+
+
+def chunk_payload(filepath: Path) -> tuple[list[str], list[str], list[dict], list[str]]:
+    """캐시 파일 하나를 (documents, embed_texts, metadatas, ids)로 변환.
+
+    documents는 전체 JSON(답변 컨텍스트용), embed_texts는 자연어 요약
+    (벡터 임베딩용)이다. build_db.py(전체 재빌드)와
+    load_warscrolls_to_chromadb(증분 적재)가 공용.
+    스탯·어빌리티가 전부 빈 항목(링크만 있는 Regiments of Renown 참조 블록)은
+    제외한다.
+    """
+    import json
+
+    warscrolls = load_json(filepath)
+    slug = filepath.stem
+    source_file = f"wahapedia_{slug}.json"
+    faction_key = slug.replace("-", " ").strip()
+
+    docs: list[str] = []
+    embed_texts: list[str] = []
+    metadatas: list[dict] = []
+    ids: list[str] = []
+    for idx, unit in enumerate(warscrolls):
+        if not unit.get("move") and not unit.get("health") and not unit.get("abilities"):
+            continue
+        role = unit_role(unit.get("keywords", []))
+        # 스탯·키워드 없이 어빌리티만 있는 블록 = Regiments of Renown 참조
+        if role == "Other" and not unit.get("move") and not unit.get("health"):
+            role = "Regiment of Renown"
+        docs.append(json.dumps(unit, ensure_ascii=False))
+        embed_texts.append(unit_embed_text(unit, role))
+        metadatas.append(
+            {
+                "source": source_file,
+                "faction": faction_key,
+                "type": "warscroll",
+                "unit_name": unit.get("name", f"unit_{idx}"),
+                "role": role,
+            }
+        )
+        ids.append(f"{source_file}_warscroll_{idx}")
+    return docs, embed_texts, metadatas, ids
+
+
+def load_warscrolls_to_chromadb(
+    db_path: str = "./my_warhammer_db",
+    collection_name: str = "faction_db",
+) -> int:
+    """캐시된 워스크롤을 faction_db에 증분 적재.
+
+    전체 재빌드 없이 실행 가능: 기존 wahapedia_<slug>.json 소스 청크를
+    지우고 캐시 내용으로 다시 채운다. 반환값은 적재한 청크 수.
+    """
+    import chromadb
+    from sentence_transformers import SentenceTransformer
+
+    from build_db import EMBEDDING_MODEL_NAME
+
+    files = sorted(DATA_DIR.glob("*.json"))
+    if not files:
+        log.warning("warscolls 캐시가 없습니다 (python -m pipeline.wahapedia 먼저 실행)")
+        return 0
+
+    client = chromadb.PersistentClient(path=db_path)
+    collection = client.get_collection(collection_name)
+    embed_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+
+    total = 0
+    for filepath in files:
+        docs, embed_texts, metadatas, ids = chunk_payload(filepath)
+        collection.delete(where={"source": f"wahapedia_{filepath.stem}.json"})
+        if not docs:
+            continue
+        embeddings = embed_model.encode(["passage: " + t for t in embed_texts]).tolist()
+        collection.add(documents=docs, embeddings=embeddings, metadatas=metadatas, ids=ids)
+        total += len(docs)
+        log.info("적재: wahapedia_%s.json (%d chunks)", filepath.stem, len(docs))
+
+    log.info("faction_db 워스크롤 적재 완료: 총 %d chunks", total)
+    return total
+
+
 def fetch_faction_warscrolls(faction_slug: str, *, force: bool = False) -> list[dict]:
     """팩션 하나를 fetch + 파싱. 결과는 warscolls/<slug>.json에 캐시."""
     if faction_slug not in FACTIONS:
@@ -298,6 +435,7 @@ if __name__ == "__main__":
         help="팩션 slug 또는 이름 (미지정 시 전체). 예: skaven 'Stormcast Eternals'",
     )
     parser.add_argument("--force", action="store_true", help="캐시 무시하고 다시 스크래핑")
+    parser.add_argument("--load-db", action="store_true", help="스크래핑 후 faction_db에 증분 적재")
     parser.add_argument("--list", action="store_true", help="지원 팩션 slug 목록 출력")
     args = parser.parse_args()
 
@@ -322,3 +460,6 @@ if __name__ == "__main__":
         db = fetch_all_factions(force=args.force)
         for slug, scrolls in db.items():
             print(f"{slug}: {len(scrolls)} warscrolls")
+
+    if args.load_db:
+        load_warscrolls_to_chromadb()
