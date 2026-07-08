@@ -257,6 +257,13 @@ other_db     : 특수 캠페인 룰 (예: 기란의 재앙)
 
 사용자 질문: {query}"""
 
+# 지시 표현 감지: 재작성 안전망에서 사용 (직전 답변의 대상을 가리키는 질문)
+DEMONSTRATIVE_RE = re.compile(
+    r"(?:^|\s)(?:각|각각|해당|그|이|저|위)\s"
+    r"|이것|그것|저것|이거|그거|저거|이들|그들|얘|걔"
+    r"|전부|모두|나머지|둘\s*다"
+)
+
 # 스피어헤드 배틀팩 감지 패턴 → 소스 파일 매핑
 # (질문에 특정 배틀팩이 명시되면 라우팅 교정 + 다른 배틀팩 청크 오염 차단에 사용)
 BATTLEPACK_SOURCES = {
@@ -450,30 +457,41 @@ def rewrite_query_with_context(current_query: str, history: list, client) -> str
     if len(history) <= 1:
         return current_query
 
-    # 최근 대화 4개(2턴) 정도만 문맥으로 사용 (마지막 항목은 현재 질문이므로 제외)
+    # 최근 대화 6개(3턴)를 문맥으로 사용 (마지막 항목은 현재 질문이므로 제외)
     history_text = ""
-    recent_history = history[-5:-1] if len(history) >= 5 else history[:-1]
+    recent_history = history[-7:-1] if len(history) >= 7 else history[:-1]
 
     for msg in recent_history:
         role = "사용자" if msg["role"] == "user" else "AI 심판"
-        # 내용이 너무 길면 자르기
-        content = msg["content"][:200] + "..." if len(msg['content']) > 200 else msg['content']
+        content = msg["content"]
+        # 어시스턴트 답변의 출처 푸터(--- 이후)는 문맥 판단에 불필요 — 제거해
+        # 절단 예산을 본문(유닛 목록 등)에 쓴다
+        if msg["role"] == "assistant":
+            content = content.split("\n---\n")[0].strip()
+        content = content[:400] + "..." if len(content) > 400 else content
         history_text += f"{role}: {content}\n"
 
     prompt = f"""당신은 워해머 에이지 오브 지그마 챗봇의 문맥 분석기입니다.
     아래 대화 기록을 참고하여, 사용자의 최신 질문을 검색용 독립 질문으로 만드세요.
 
     [규칙]
-    1. 최신 질문에 대명사(이거, 그 유닛, 저 팩션, 해당 스피어헤드 등)나 생략된 주어가 있을 때만,
+    1. 최신 질문에 대명사·지시 표현(이거, 그 유닛, 저 팩션, 해당 스피어헤드,
+       "각 유닛", "각각", "전부", "모두", "나머지", "이들" 등)이나 생략된 주어가 있을 때만,
        대화 기록에서 그 대상을 찾아 명확한 고유명사로 바꿔 재작성하세요.
-    2. 최신 질문이 그 자체로 완결된 질문이면(새 주제로 넘어간 경우 포함) 원문을 한 글자도 바꾸지 말고 그대로 출력하세요.
-    3. 최신 질문이 언급하지 않은 팩션/유닛 이름을 대화 기록에서 가져와 추가하는 것을 절대 금지합니다.
-    4. 질문의 의도(규칙 질문인지, 유닛 질문인지)를 바꾸지 마세요.
-    5. 다른 말은 절대 덧붙이지 마세요.
+    2. 최신 질문이 직전 AI 답변에 나열된 목록(유닛 목록, 스피어헤드 목록 등)을 가리키는 경우,
+       반드시 그 목록의 주체(팩션/스피어헤드 이름)를 붙여 재작성하세요. 이것은 규칙 4의 금지에
+       해당하지 않습니다 — 지시 표현이 가리키는 대상을 밝히는 것이기 때문입니다.
+    3. 최신 질문이 그 자체로 완결된 질문이면(새 주제로 넘어간 경우 포함) 원문을 한 글자도 바꾸지 말고 그대로 출력하세요.
+    4. 최신 질문에 지시 표현이 전혀 없는데 대화 기록의 팩션/유닛 이름을 추가하는 것은 금지합니다.
+    5. 질문의 의도(규칙 질문인지, 유닛 질문인지)를 바꾸지 마세요.
+    6. 다른 말은 절대 덧붙이지 마세요.
 
     [예시]
     - 기록에 "카라드론 오버로드 스피어헤드 유닛 알려줘"가 있고 최신 질문이 "그 중 리더는 누구야?"
       → "카라드론 오버로드 스피어헤드 유닛 중 리더는 누구인가요?" (대명사 '그 중'을 해소)
+    - 기록에 "Grundstok Trailblazers 부대에는 다음 유닛이 포함됩니다: General Endrinmaster, ..."가 있고
+      최신 질문이 "각 유닛의 워스크롤을 알려줘"
+      → "Grundstok Trailblazers의 각 유닛의 워스크롤을 알려줘" (목록의 주체를 붙임)
     - 기록에 "카라드론 오버로드 스피어헤드 유닛 알려줘"가 있고 최신 질문이 "스피어헤드 sand and bone에 대한 규칙을 알려줘"
       → "스피어헤드 sand and bone에 대한 규칙을 알려줘" (새 주제의 완결된 질문이므로 그대로)
 
@@ -617,6 +635,22 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             else:
                 log.info("[1.재작성] 변경 없음")
 
+            # 재작성 안전망: LLM이 지시 표현을 못 풀고 원문 그대로 반환한
+            # 경우(경계 사례에서 비결정적으로 발생), 직전 턴의 검색 주제를
+            # 결합해 결정적으로 보정한다. 지시 표현이 없는 새 주제 질문에는
+            # 발동하지 않는다.
+            last_topic = st.session_state.get("last_search_query", "")
+            if (
+                rewritten_query == user_query
+                and last_topic
+                and len(st.session_state.messages) > 1
+                and DEMONSTRATIVE_RE.search(user_query)
+                and last_topic.lower() not in user_query.lower()
+            ):
+                rewritten_query = f"{last_topic} — {user_query}"
+                log.info("[1.재작성] 안전망 발동: 직전 주제 %r 결합 → %s",
+                         last_topic, rewritten_query)
+
             # 1. 라우터: '사용자의 원본 질문'으로 의도를 파악하여 DB 결정
             db_name = route_query(rewritten_query, gemini_client)
             log.info("[2.라우터] 판정: %s", db_name)
@@ -647,6 +681,8 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             search_query = search_query.strip().strip('"').strip("'").strip()
             faction_hint = search_query.lower().replace("-", " ").strip()
             log.info("[3.키워드] 추출: %r (faction_hint=%r)", search_query, faction_hint)
+            # 다음 턴의 재작성 안전망에서 쓸 직전 검색 주제 저장
+            st.session_state.last_search_query = search_query
 
             # 3. 쿼리 임베딩 & 벡터 검색 (순수 영어 키워드로 검색하여 정확도 100% 달성)
             _q = search_query if search_query else rewritten_query
