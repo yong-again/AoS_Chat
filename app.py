@@ -257,6 +257,23 @@ other_db     : 특수 캠페인 룰 (예: 기란의 재앙)
 
 사용자 질문: {query}"""
 
+# 스피어헤드 '게임 진행' 질문 감지: 진행 규칙(트위스트/배틀 택틱/배틀플랜)은
+# 배틀팩마다 다르므로, 배틀팩 미지정 시 검색 대신 배틀팩을 되묻는다
+SPEARHEAD_PROGRESSION_RE = re.compile(
+    r"진행|게임\s*방법|플레이\s*방법|어떻게\s*(?:하|해|플레이)|순서|시작부터"
+)
+
+CLARIFY_BATTLEPACK_MSG = (
+    "스피어헤드의 게임 진행 규칙(트위스트 카드, 배틀 택틱, 배틀플랜)은 "
+    "**배틀팩(시즌)마다 다릅니다.** 어떤 배틀팩 기준으로 알려드릴까요?\n\n"
+    "- **Fire and Jade** — 시즌 배틀팩\n"
+    "- **Sand and Bone** — 시즌 배틀팩\n"
+    "- **City of Ash** — 시즌 배틀팩\n"
+    "- **Spearhead Doubles** — 2대2 협동전 배틀팩\n\n"
+    "예: *\"sand and bone에서 게임 진행 순서 알려줘\"* 처럼 질문해 주시면 "
+    "배틀 시작부터 라운드 종료까지 해당 배틀팩 규칙으로 정리해 드립니다."
+)
+
 # 지시 표현 감지: 재작성 안전망에서 사용 (직전 답변의 대상을 가리키는 질문)
 DEMONSTRATIVE_RE = re.compile(
     r"(?:^|\s)(?:각|각각|해당|그|이|저|위)\s"
@@ -304,6 +321,8 @@ SYSTEM_PROMPTS = {
         "제공된 코어 룰 및 용어집 문서를 바탕으로 정확하게 한국어로 답변하세요. "
         "▶ 용어/키워드 질문: 특정 키워드의 의미를 물어보면 정의와 효과를 설명해주세요. "
         "▶ 스피어헤드 룰 질문: 검색된 문서에 '일반 스피어헤드'와 '스피어헤드 더블즈' 규칙이 혼재되어 있다면, 임의로 하나만 골라 설명하지 마세요. 반드시 '일반 스피어헤드(1대1)와 스피어헤드 더블즈(다대다) 중 어떤 모드의 규칙을 알고 싶으신가요?'라고 먼저 되물어보세요. "
+        "▶ 스피어헤드 일반/진행 규칙 질문에서 특정 배틀팩이 지정되지 않았고 검색된 문서가 소개 수준(제품 설명)뿐이라면, 개요만 장황하게 늘어놓지 말고 다음을 안내하세요: "
+        "'진행 규칙(트위스트, 배틀 택틱, 배틀플랜)은 배틀팩마다 다르니 Fire and Jade / Sand and Bone / City of Ash / Spearhead Doubles 중 어떤 배틀팩인지 알려달라'고 되물어보세요. "
         "[절대 금지]: 제공된 문서에 질문과 직접 일치하는 내용이 없다면 다음 행동을 하지 마세요: "
         "(1) 기존 지식이나 외부 설정으로 답변 생성, "
         "(2) 유사한 룰을 찾아 유추하거나 비유하는 설명. "
@@ -674,6 +693,22 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 if db_name == "rule_db":
                     db_name = "spearhead_db"
                     log.info("[2.라우터] 안전장치: 배틀팩 질문 → spearhead_db 교정")
+
+            # 스피어헤드 진행 질문 + 배틀팩 미지정: 진행 규칙은 배틀팩마다
+            # 달라 개요 청크만 검색되므로, 검색 대신 배틀팩을 되묻는다
+            if (
+                not matched_battlepack
+                and re.search(r"스피어헤드|스피어\s*모드|spearhead", rewritten_query, re.I)
+                and SPEARHEAD_PROGRESSION_RE.search(rewritten_query)
+            ):
+                log.info("[2.라우터] 스피어헤드 진행 질문 + 배틀팩 미지정 → 배틀팩 확인 반문")
+                st.markdown(CLARIFY_BATTLEPACK_MSG)
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": CLARIFY_BATTLEPACK_MSG})
+                save_chat_history(st.session_state.session_id, st.session_state.messages)
+                append_qa_log(st.session_state.session_id, user_query,
+                              CLARIFY_BATTLEPACK_MSG, "clarify", "")
+                st.stop()
 
             # 2. 검색 쿼리 추출: 벡터 DB에 던질 '순수 영어 키워드'만 생성
             search_query = generate_search_query(rewritten_query, db_name, gemini_client)
