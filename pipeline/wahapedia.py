@@ -47,7 +47,7 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
-DATA_DIR = project_dir() / "warscolls"
+DATA_DIR = project_dir() / "data" / "warscolls"
 REQUEST_DELAY_S = 1.0  # 팩션 페이지 요청 사이 대기(예의상)
 REQUEST_TIMEOUT_S = 60
 
@@ -344,6 +344,47 @@ def chunk_payload(filepath: Path) -> tuple[list[str], list[str], list[dict], lis
         )
         ids.append(f"{source_file}_warscroll_{idx}")
     return docs, embed_texts, metadatas, ids
+
+
+def balance_chunk_payload(filepath: Path) -> tuple[list[str], list[dict], list[str]]:
+    """캐시 파일 하나를 balance_db용 포인트 청크로 변환.
+
+    wahapedia 워스크롤의 points/unit_size/base_size 등 편성 정보만 추린
+    소형 청크로, PDF 배틀 프로필 없이 balance_db를 구성할 때 사용한다.
+    """
+    import json
+
+    warscrolls = load_json(filepath)
+    slug = filepath.stem
+    source_file = f"wahapedia_{slug}.json"
+    faction_key = slug.replace("-", " ").strip()
+
+    docs: list[str] = []
+    metadatas: list[dict] = []
+    ids: list[str] = []
+    for idx, unit in enumerate(warscrolls):
+        if unit.get("points") is None and unit.get("unit_size") is None:
+            continue
+        profile = {
+            "unit_name": unit.get("name", f"unit_{idx}"),
+            "faction": unit.get("faction", ""),
+            "points": unit.get("points"),
+            "unit_size": unit.get("unit_size"),
+            "base_size": unit.get("base_size", ""),
+            "can_be_reinforced": unit.get("can_be_reinforced", False),
+            "regiment_options": unit.get("regiment_options", ""),
+        }
+        docs.append(json.dumps(profile, ensure_ascii=False))
+        metadatas.append(
+            {
+                "source": source_file,
+                "faction": faction_key,
+                "type": "point",
+                "unit_name": profile["unit_name"],
+            }
+        )
+        ids.append(f"{source_file}_point_{idx}")
+    return docs, metadatas, ids
 
 
 def load_warscrolls_to_chromadb(

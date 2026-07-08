@@ -11,41 +11,29 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Logs
-logs/
-*.log
+# Runtime data (실행 중 생성: 로그, 채팅 기록)
+runtime/
 
-# Chat history & logs (runtime data)
-chat_history/
-chat_logs/
-
-# Outputs / generated data
-outputs/
-data.json
+# Data (재생성 가능: 스크래핑 캐시, PDF, 추출 결과)
+# - data/warscolls, data/wahapedia_* : pipeline.wahapedia* 로 재생성
+# - data/outputs : main.py(PDF 파이프라인) 결과
+# - data/pdfs : scripts/download_pdfs.py 로 재다운로드
+data/
 *.pdf
 *.tmp
 *.cache
-debug_output/
-
-# Wahapedia 스크래핑 캐시 (pipeline.wahapedia* 로 재생성 가능)
-warscolls/
-wahapedia_rules/
-wahapedia_factions/
-
-# Wahapedia CSV export 데이터
-csv_file/
+*.log
 
 # Scratch files
+scratch/
 temp.py
 temp.ipynb
 
+# Chroma vector DB (build_db.py 로 재생성)
+my_warhammer_db/
+
 # DB dump folders (generated JSON from pipeline)
 *_db/
-pearhead_db/
-spearhead_db/
-faction_db/
-balance_db/
-other_db/
 
 # Local model weights (too large for git)
 Qwen3-8B/
@@ -55,4 +43,3 @@ Qwen3-8B/
 .vscode/
 .cursor/
 .idea/
-

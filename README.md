@@ -41,10 +41,9 @@ flowchart TD
 
 ```
 AoS_Chat/
-├── app.py              # Streamlit 웹 앱 (RAG 채팅 UI)
-├── main.py             # 전체 파이프라인 실행 진입점
-├── runner.py           # 단일 문서 실행 (디버그용)
-├── data.json           # PDF URL 인덱스 캐시 (스크래핑 결과)
+├── app.py              # Streamlit 웹 앱 (RAG 채팅 UI) — 메인 진입점
+├── build_db.py         # 벡터 DB 빌드 진입점 (data/ → my_warhammer_db/)
+├── tools.py            # 앱용 Gemini 함수 도구 (기대 데미지 계산)
 │
 ├── core/               # 공용 모듈
 │   ├── config.py           설정·상수·Gemini 프롬프트
@@ -52,7 +51,10 @@ AoS_Chat/
 │   ├── retry.py            지수 백오프 재시도 로직
 │   └── utils.py            경로·JSON·파일명 유틸리티
 │
-├── pipeline/           # 파이프라인 코어 로직
+├── pipeline/           # 데이터 수집·추출 파이프라인
+│   ├── wahapedia.py        Wahapedia 워스크롤 스크래퍼
+│   ├── wahapedia_rules.py  Wahapedia 코어 룰/배틀팩 스크래퍼
+│   ├── wahapedia_factions.py  Wahapedia 팩션 룰 스크래퍼
 │   ├── classifier.py       문서명 → DB 분류 (rule/faction/spearhead/other)
 │   ├── scraper.py          Firecrawl 스크래핑 및 캐시 관리
 │   ├── gemini_io.py        PDF 다운로드 · Gemini 업로드 · JSON 추출
@@ -60,14 +62,36 @@ AoS_Chat/
 │   ├── notifier.py         외부 채널 알림 (Telegram 등)
 │   └── pipeline.py         오케스트레이션 (다운로드 → 파싱 → 저장)
 │
-├── outputs/            # 파싱된 JSON 결과물
-│   ├── rule_db/            코어 룰 문서
-│   ├── faction_db/         팩션 팩 (매치드 플레이)
-│   ├── spearhead_db/       스피어헤드 문서
-│   ├── balance_db/         배틀 프로필 (포인트)
-│   └── other_db/           기란의 재앙 등 기타 문서
+├── scripts/            # 보조 스크립트 (python -m scripts.<이름> 으로 실행)
+│   ├── main.py             PDF 전체 파이프라인 진입점 (구 흐름)
+│   ├── runner.py           단일 문서 실행 (디버그용)
+│   ├── download_pdfs.py    data/data.json 기반 PDF 일괄 다운로드
+│   ├── db_query.py         벡터 DB 질의 테스트
+│   ├── read.py             벡터 DB 조회 유틸
+│   ├── debug_chunk.py      청킹 디버그
+│   ├── benchmark_embeddings.py  임베딩 모델 벤치마크
+│   ├── validator.py        outputs JSON 검증
+│   ├── mathhammer.py       데미지 기대값 계산 실험
+│   └── app_qwen.py         로컬 Qwen 버전 앱 (실험)
 │
-└── logs/               # 로그 파일 (자동 생성)
+├── data/               # 재생성 가능한 데이터 (gitignore)
+│   ├── data.json           PDF URL 인덱스 캐시 (스크래핑 결과)
+│   ├── warscolls/          Wahapedia 워스크롤 스크래핑 캐시
+│   ├── warscolls_md/       워스크롤 마크다운 변환본
+│   ├── wahapedia_rules/    코어 룰/배틀팩 스크래핑 캐시
+│   ├── wahapedia_factions/ 팩션 룰 스크래핑 캐시
+│   ├── csv_file/           Wahapedia CSV export
+│   ├── pdfs/               다운로드한 공식 PDF
+│   ├── outputs/            PDF 파싱 JSON 결과 (rule_db/faction_db/...)
+│   └── outputs_debug/      디버그 실행 결과
+│
+├── my_warhammer_db/    # ChromaDB 벡터 DB (build_db.py 로 생성)
+├── changelog/          # 수정 이력 (날짜별 YYYY-MM-DD.md)
+├── runtime/            # 실행 중 생성 (gitignore)
+│   ├── chat_history/       세션별 채팅 기록
+│   ├── chat_logs/          일별 Q&A 로그
+│   └── logs/               파이프라인 로그 (aos_chat.log)
+└── scratch/            # 임시 실험 파일 (gitignore)
 ```
 
 ---
@@ -118,26 +142,35 @@ TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 ### 1단계: PDF 파싱 및 JSON 저장
 
 ```bash
-# 전체 문서 처리 (data.json 캐시 재사용)
-python main.py
+# 전체 문서 처리 (data/data.json 캐시 재사용)
+python -m scripts.main
 
 # 분류 요약만 확인 (API 호출 없음)
-python main.py --dry-run
+python -m scripts.main --dry-run
 
 # 특정 섹션만 처리	
-python main.py --section "Spearhead"
-python main.py --section "Faction Packs"
+python -m scripts.main --section "Spearhead"
+python -m scripts.main --section "Faction Packs"
 
 # 웹에서 PDF 목록 재스크래핑 후 전체 처리
-python main.py --force-scrape
+python -m scripts.main --force-scrape
 ```
 
-> 결과는 `outputs/<db_name>/` 아래에 JSON 파일로 저장됩니다.
+> 결과는 `data/outputs/<db_name>/` 아래에 JSON 파일로 저장됩니다.
 
 단일 문서만 처리하려면 (디버그):
 
 ```bash
-python runner.py --keyword "Lumineth Realm-lords"
+python -m scripts.runner --keyword "Lumineth Realm-lords"
+```
+
+Wahapedia 스크래핑 및 벡터 DB 빌드:
+
+```bash
+python -m pipeline.wahapedia            # 워스크롤 스크래핑 → data/warscolls/
+python -m pipeline.wahapedia_rules      # 코어 룰/배틀팩 → data/wahapedia_rules/
+python -m pipeline.wahapedia_factions   # 팩션 룰 → data/wahapedia_factions/
+python build_db.py                      # → my_warhammer_db/
 ```
 
 ### 2단계: 웹 앱 실행
@@ -166,7 +199,7 @@ streamlit run app.py
 
 ## 로그
 
-콘솔은 레벨별 컬러로 출력되며, `logs/aos_chat.log`에 파일로도 저장됩니다.
+콘솔은 레벨별 컬러로 출력되며, `runtime/logs/aos_chat.log`에 파일로도 저장됩니다.
 
 ```
 환경 변수 AOS_LOG_LEVEL=DEBUG  로 레벨 변경 가능 (기본: INFO)

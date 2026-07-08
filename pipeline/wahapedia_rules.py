@@ -41,7 +41,7 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
-DATA_DIR = project_dir() / "wahapedia_rules"
+DATA_DIR = project_dir() / "data" / "wahapedia_rules"
 REQUEST_DELAY_S = 1.0
 REQUEST_TIMEOUT_S = 60
 
@@ -55,11 +55,12 @@ RULES_PAGES: dict[str, dict] = {
     "general-s-handbook-2024-25": {"name": "General's Handbook 2024-25", "category": "generals_handbook", "season": "2024-25", "default": True},
     "general-s-handbook-2025-26": {"name": "General's Handbook 2025-26", "category": "generals_handbook", "season": "2025-26", "default": True},
     "general-s-handbook-2026-27": {"name": "General's Handbook 2026-27", "category": "generals_handbook", "season": "2026-27", "default": True},
-    # Spearhead Battlepack
-    "fire-and-jade": {"name": "Fire and Jade", "category": "spearhead_battlepack", "default": True},
-    "sand-and-bone": {"name": "Sand and Bone", "category": "spearhead_battlepack", "default": True},
-    "city-of-ash": {"name": "City of Ash", "category": "spearhead_battlepack", "default": True},
-    "spearhead-doubles": {"name": "Spearhead Doubles", "category": "spearhead_battlepack", "default": True},
+    # Spearhead Battlepack — 룰 질문(rule_db)과 스피어헤드 질문(spearhead_db)
+    # 어느 쪽으로 라우팅되어도 검색되도록 두 DB에 모두 적재
+    "fire-and-jade": {"name": "Fire and Jade", "category": "spearhead_battlepack", "default": True, "db": ("rule_db", "spearhead_db")},
+    "sand-and-bone": {"name": "Sand and Bone", "category": "spearhead_battlepack", "default": True, "db": ("rule_db", "spearhead_db")},
+    "city-of-ash": {"name": "City of Ash", "category": "spearhead_battlepack", "default": True, "db": ("rule_db", "spearhead_db")},
+    "spearhead-doubles": {"name": "Spearhead Doubles", "category": "spearhead_battlepack", "default": True, "db": ("rule_db", "spearhead_db")},
     # Matched Play Battlepack
     "first-blood": {"name": "First Blood", "category": "matched_play_battlepack", "default": False},
     # Path to Glory Battlepack
@@ -248,11 +249,13 @@ def chunk_payload(filepath: Path) -> tuple[list[str], list[dict], list[str]]:
     return docs, metadatas, ids
 
 
-def load_rules_to_chromadb(
-    db_path: str = "./my_warhammer_db",
-    collection_name: str = "rule_db",
-) -> int:
-    """캐시된 룰 청크를 rule_db에 증분 적재.
+def page_db_targets(page_slug: str) -> tuple[str, ...]:
+    """페이지가 적재될 컬렉션 목록 (기본 rule_db, 배틀팩은 rule_db+spearhead_db)."""
+    return (RULES_PAGES.get(page_slug) or {}).get("db", ("rule_db",))
+
+
+def load_rules_to_chromadb(db_path: str = "./my_warhammer_db") -> int:
+    """캐시된 룰 청크를 페이지별 대상 DB(rule_db/spearhead_db)에 증분 적재.
 
     전체 재빌드(build_db.py) 없이 실행 가능: 기존 wahapedia_* 소스 청크를
     지우고 캐시 파일 내용으로 다시 채운다. 반환값은 적재한 청크 수.
@@ -268,21 +271,26 @@ def load_rules_to_chromadb(
         return 0
 
     client = chromadb.PersistentClient(path=db_path)
-    collection = client.get_collection(collection_name)
+    collections = {name: client.get_collection(name) for name in ("rule_db", "spearhead_db")}
     embed_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
     total = 0
     for filepath in files:
         docs, metadatas, ids = chunk_payload(filepath)
-        collection.delete(where={"source": f"wahapedia_{filepath.stem}.json"})
+        source_file = f"wahapedia_{filepath.stem}.json"
+        # 대상 DB가 바뀌었을 수 있으므로 양쪽 모두에서 기존 청크 제거
+        for col in collections.values():
+            col.delete(where={"source": source_file})
         if not docs:
             continue
         embeddings = embed_model.encode(["passage: " + d for d in docs]).tolist()
-        collection.add(documents=docs, embeddings=embeddings, metadatas=metadatas, ids=ids)
+        targets = page_db_targets(filepath.stem)
+        for name in targets:
+            collections[name].add(documents=docs, embeddings=embeddings, metadatas=metadatas, ids=ids)
         total += len(docs)
-        log.info("적재: wahapedia_%s.json (%d chunks)", filepath.stem, len(docs))
+        log.info("적재: %s → %s (%d chunks)", source_file, "/".join(targets), len(docs))
 
-    log.info("rule_db 적재 완료: 총 %d chunks", total)
+    log.info("룰 페이지 적재 완료: 총 %d chunks", total)
     return total
 
 

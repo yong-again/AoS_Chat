@@ -143,7 +143,7 @@ def process_doc(task: dict, client: genai.Client | None, dry_run: bool) -> None:
     chunks_dir.mkdir(exist_ok=True)
     results_dir.mkdir(exist_ok=True)
 
-    existing_output = Path("outputs") / db_target / f"{safe_name}.json"
+    existing_output = Path("data/outputs") / db_target / f"{safe_name}.json"
 
     # ── Step 1: 청킹 분할 확인 ──────────────────────────────────────────────
     section_header(f"STEP 1 — 청킹 분할 확인 [{doc_name}]")
@@ -260,7 +260,7 @@ def main() -> None:
     DEBUG_DIR.mkdir(exist_ok=True)
 
     # data.json 로드
-    data_path = Path("data.json")
+    data_path = Path("data/data.json")
     if not data_path.exists():
         log.error("data.json을 찾을 수 없습니다. python main.py --force-scrape 로 먼저 생성하세요.")
         sys.exit(1)

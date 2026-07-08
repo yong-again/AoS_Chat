@@ -10,10 +10,16 @@ from google.genai import types
 from dotenv import dotenv_values
 from tools import calculate_expected_damage
 import pprint
+import time
+from core.logging_config import setup_logging, get_logger
+
+# 파이프라인 전 과정 로그: 콘솔 + runtime/logs/aos_chat.log (AOS_LOG_LEVEL로 레벨 조정)
+setup_logging()
+log = get_logger("aos.pipeline")
 
 # ─── 채팅 내역 저장 ───────────────────────────────────────────────────────────
-HISTORY_DIR = "chat_history"
-LOG_DIR = "chat_logs"
+HISTORY_DIR = "runtime/chat_history"
+LOG_DIR = "runtime/chat_logs"
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -230,7 +236,13 @@ ROUTER_PROMPT = """
 아래 규칙을 1번부터 순서대로 검사하여, 가장 먼저 해당하는 규칙 하나만 적용하세요.
 1. 질문에 포인트, 점수, 비용, points, 부대 편성 등 비용/편성 관련 단어가 있으면 balance_db.
 2. 질문에 "스피어헤드", "뱅가드" 단어가 있더라도, "규칙", "진행 순서", "게임 방법" 등 게임을 플레이하는 방식에 대한 질문이라면 rule_db.
-3. 특정 팩션의 스피어헤드 고유 명칭(예: Hurakan Vanguard)이나 스피어헤드 세트의 유닛 스탯, 구성을 묻는다면 spearhead_db.
+   단, 특정 배틀팩 이름(Fire and Jade, Sand and Bone, City of Ash, Spearhead Doubles)이나
+   특정 스피어헤드/유닛 이름이 함께 언급되면 spearhead_db.
+   (예: "sand and bone에서 grundstok trailblazers로 플레이하는 과정 알려줘" → spearhead_db)
+3. 질문에 "스피어헤드"가 있고 유닛/구성/스탯/정보를 묻는다면 spearhead_db.
+   특정 팩션의 스피어헤드 고유 명칭(예: Hurakan Vanguard)이나 스피어헤드 배틀팩
+   (Fire and Jade, Sand and Bone, City of Ash, Spearhead Doubles)의 규칙을 묻는 경우도 spearhead_db.
+   (예: "카라드론 오버로드 팩션의 스피어헤드 유닛 정보를 알려줘" → spearhead_db)
 4. 룰 용어/키워드(예: Ward, Rend, 차지)의 "의미", "뜻", "정의"를 묻는다면 rule_db.
    단, 특정 유닛이나 팩션에 대한 설명 요청("~가 무엇인가요?" 형태라도 대상이 유닛/팩션이면)은 faction_db.
 5. 위 규칙에 해당하지 않으면 아래 카테고리 설명 중 가장 적합한 것을 선택.
@@ -243,6 +255,15 @@ spearhead_db : 스피어헤드 모드 전용 룰, 스피어헤드 세트 구성(
 other_db     : 특수 캠페인 룰 (예: 기란의 재앙)
 
 사용자 질문: {query}"""
+
+# 스피어헤드 배틀팩 감지 패턴 → 소스 파일 매핑
+# (질문에 특정 배틀팩이 명시되면 라우팅 교정 + 다른 배틀팩 청크 오염 차단에 사용)
+BATTLEPACK_SOURCES = {
+    r"sand\s*(?:and|&|앤)?\s*bone|샌드\s*앤\s*본": "wahapedia_sand-and-bone.json",
+    r"city\s*of\s*ash|시티\s*오브\s*애[쉬시]": "wahapedia_city-of-ash.json",
+    r"fire\s*(?:and|&|앤)?\s*jade|파이어\s*앤\s*제이드": "wahapedia_fire-and-jade.json",
+    r"spearhead\s*doubles|스피어헤드\s*더블": "wahapedia_spearhead-doubles.json",
+}
 
 # 현행 GHB 시즌. 과거 시즌 소스는 기본 검색에서 제외 (사이드바 토글로 포함 가능)
 CURRENT_GHB_SEASON = "2026-27"
@@ -304,6 +325,12 @@ SYSTEM_PROMPTS = {
         "   이 값이 없는 항목은 목록에서 제외하세요. 파일명(출처)은 절대 답변에 노출하지 마세요. "
         "▶ 특정 스피어헤드 정보 질문: 해당 스피어헤드의 이름, 규칙(spearhead_rules), 포함 유닛 목록(unit_name)을 정리하세요. "
         "▶ 특정 스피어헤드 유닛 스탯 질문: 스탯과 무기 프로필을 설명하고 '스피어헤드 전용 데이터입니다'라고 명시하세요. "
+        "▶ 스피어헤드 배틀팩(Fire and Jade, Sand and Bone, City of Ash, Spearhead Doubles) 규칙 질문: "
+        "   해당 배틀팩 문서([배틀팩 이름 | 섹션] 형식 텍스트)의 배틀플랜, 트위스트, 진행 규칙을 정리해 설명하세요. "
+        "▶ 특정 스피어헤드로 배틀을 진행하는 과정 질문: 배틀팩 문서의 시퀀스를 골격으로 하되, "
+        "   능력 예시는 반드시 질문한 스피어헤드의 것(배틀 트레잇, 레지먼트 어빌리티, 인핸스먼트, 워스크롤 능력)을 "
+        "   각 단계에 연결해 설명하세요. 다른 팩션이나 다른 배틀팩의 능력을 예시로 들지 마세요. "
+        "   스피어헤드 모드에는 배틀플랜 선택이 없으므로 배틀플랜을 고르라는 안내를 하지 마세요. "
         "[절대 금지]: JSON 파일명을 답변에 포함하거나, 파일명에서 스피어헤드 이름을 추론하거나, 문서에 없는 내용을 지어내지 마세요. "
         "스피어헤드 이름 정보가 없으면 '해당 팩션의 스피어헤드 이름 정보를 DB에서 찾을 수 없습니다'라고 안내하세요."
     ),
@@ -369,7 +396,9 @@ def generate_search_query(query: str, db_name: str, client) -> str:
        - 글룸스파이트 깃츠 → GLOOMSPITE GITZ
        - 선즈 오브 베헤마트 → SONS OF BEHEMAT
        - 본스플리터즈 → BONESPLITTERZ
-    5. 한국어 서술어는 모두 제거하세요.
+    5. 룰 용어/키워드의 뜻·정의·규칙을 묻는 경우: 그 용어의 영어 키워드만 출력하세요.
+       '코어룰', 'core rules', '용어집', '규칙서' 같은 문서 이름은 검색어에 절대 포함하지 마세요.
+    6. 한국어 서술어는 모두 제거하세요.
 
     예시: grundstok trailblazers에 대해 알고 싶어 -> Grundstok Trailblazers
     예시: 카하드론 그런드스탁 트레일블레이저스 정보 -> Grundstok Trailblazers
@@ -379,6 +408,9 @@ def generate_search_query(query: str, db_name: str, client) -> str:
     예시: 루미네스 보병 워든 스탯 -> Vanari Auralan Wardens
     예시: 루미네스 렐름의 유닛들 목록 -> LUMINETH REALM-LORDS
     예시: 스톰캐스트 이터널스 팩션 유닛 목록 -> STORMCAST ETERNALS
+    예시: 코어룰에서 healing이라는 용어를 찾아서 알려줘 -> Healing
+    예시: ward 세이브가 뭐야 -> Ward
+    예시: 렌드가 무슨 뜻이야 -> Rend
 
     질문: {query}
     출력:
@@ -422,16 +454,28 @@ def rewrite_query_with_context(current_query: str, history: list, client) -> str
         history_text += f"{role}: {content}\n"
 
     prompt = f"""당신은 워해머 에이지 오브 지그마 챗봇의 문맥 분석기입니다.
-    아래 대화 기록을 읽고, 사용자의 최신 질문을 대화 문맥이 모두 포함된 '독립적인 하나의 완벽한 질문'으로 재작성하세요.
-    대명사(이거, 저 팩션, 그 스피어헤드 등)나 생략된 주어를 명확한 고유명사로 대체하세요.
-    질문이 이미 명확하다면 그대로 출력하세요. 다른 말은 절대 덧붙이지 마세요.
-    
+    아래 대화 기록을 참고하여, 사용자의 최신 질문을 검색용 독립 질문으로 만드세요.
+
+    [규칙]
+    1. 최신 질문에 대명사(이거, 그 유닛, 저 팩션, 해당 스피어헤드 등)나 생략된 주어가 있을 때만,
+       대화 기록에서 그 대상을 찾아 명확한 고유명사로 바꿔 재작성하세요.
+    2. 최신 질문이 그 자체로 완결된 질문이면(새 주제로 넘어간 경우 포함) 원문을 한 글자도 바꾸지 말고 그대로 출력하세요.
+    3. 최신 질문이 언급하지 않은 팩션/유닛 이름을 대화 기록에서 가져와 추가하는 것을 절대 금지합니다.
+    4. 질문의 의도(규칙 질문인지, 유닛 질문인지)를 바꾸지 마세요.
+    5. 다른 말은 절대 덧붙이지 마세요.
+
+    [예시]
+    - 기록에 "카라드론 오버로드 스피어헤드 유닛 알려줘"가 있고 최신 질문이 "그 중 리더는 누구야?"
+      → "카라드론 오버로드 스피어헤드 유닛 중 리더는 누구인가요?" (대명사 '그 중'을 해소)
+    - 기록에 "카라드론 오버로드 스피어헤드 유닛 알려줘"가 있고 최신 질문이 "스피어헤드 sand and bone에 대한 규칙을 알려줘"
+      → "스피어헤드 sand and bone에 대한 규칙을 알려줘" (새 주제의 완결된 질문이므로 그대로)
+
     [대화기록]
     {history_text}
-    
+
     [최신질문]
     사용자: {current_query}
-    
+
     [재작성된 질문]
 """
     try:
@@ -554,30 +598,87 @@ if user_query := st.chat_input("질문을 입력하세요..."):
     with st.chat_message("assistant", avatar=AVATAR_ASSISTANT):
         with st.spinner("지그마의 서고를 뒤적이는 중..."):
 
+            pipeline_t0 = time.monotonic()
+            log.info("═══ 새 질문 (session=%s): %s", st.session_state.session_id, user_query)
+
             # 0. 문백을 반영한 쿼리 재작성 (대화 누적)
             rewritten_query = rewrite_query_with_context(user_query, st.session_state.messages, gemini_client)
             # 디버깅용
             st.caption(f"문맥 변환: {rewritten_query}")
+            if rewritten_query != user_query:
+                log.info("[1.재작성] %s", rewritten_query)
+            else:
+                log.info("[1.재작성] 변경 없음")
 
             # 1. 라우터: '사용자의 원본 질문'으로 의도를 파악하여 DB 결정
             db_name = route_query(rewritten_query, gemini_client)
+            log.info("[2.라우터] 판정: %s", db_name)
+
+            # 라우터 안전장치: 스피어헤드 질문이 faction_db로 새는 오분류 교정
+            # (rule_db 판정은 스피어헤드 '진행 규칙' 질문일 수 있으므로 유지)
+            if db_name == "faction_db" and re.search(r"스피어헤드|spearhead", rewritten_query, re.I):
+                db_name = "spearhead_db"
+                log.info("[2.라우터] 안전장치: 스피어헤드 키워드 감지 → spearhead_db 교정")
+
+            # 라우터 안전장치 2: 특정 배틀팩이 명시된 질문은 spearhead_db로 교정.
+            # rule_db에는 팩션 스피어헤드 데이터가 없어 유닛/능력 예시를 찾지 못하고,
+            # GHB 매치드 플레이 배틀플랜이 잘못 섞여 들어온다.
+            matched_battlepack = next(
+                (src for pat, src in BATTLEPACK_SOURCES.items()
+                 if re.search(pat, rewritten_query, re.I)),
+                None,
+            )
+            if matched_battlepack:
+                log.info("[2.라우터] 배틀팩 감지: %s", matched_battlepack)
+                if db_name == "rule_db":
+                    db_name = "spearhead_db"
+                    log.info("[2.라우터] 안전장치: 배틀팩 질문 → spearhead_db 교정")
 
             # 2. 검색 쿼리 추출: 벡터 DB에 던질 '순수 영어 키워드'만 생성
             search_query = generate_search_query(rewritten_query, db_name, gemini_client)
             # 빈 문자열("")이나 따옴표만 있는 경우 정리
             search_query = search_query.strip().strip('"').strip("'").strip()
             faction_hint = search_query.lower().replace("-", " ").strip()
+            log.info("[3.키워드] 추출: %r (faction_hint=%r)", search_query, faction_hint)
 
             # 3. 쿼리 임베딩 & 벡터 검색 (순수 영어 키워드로 검색하여 정확도 100% 달성)
             _q = search_query if search_query else rewritten_query
-            query_embedding = embed_model.encode("query: " + _q).tolist()
+            query_texts = ["query: " + _q]
+            # rule_db/spearhead_db: 키워드 추출이 검색어를 훼손하거나(예: 'healing'
+            # 탈락) 배틀팩+유닛처럼 대상이 둘인 질문에서 한쪽만 추출돼도 원문
+            # 질문 임베딩 검색이 받쳐주도록 병행 검색 후 병합한다.
+            if db_name in ("rule_db", "spearhead_db") and rewritten_query and rewritten_query != _q:
+                query_texts.append("query: " + rewritten_query)
+            query_embeddings = embed_model.encode(query_texts).tolist()
             collection = collections[db_name]
+            if len(query_texts) > 1:
+                log.info("[4.검색] 병행 검색: 키워드 임베딩 + 원문 질문 임베딩")
 
-            print(f"search_query: {search_query}")
-            print(f"db_name: {db_name}")
+            # 참고용 진단: 키워드 임베딩으로 모든 DB의 최상위 유사도를 조사
+            # (라우터 판정과 실제 유사도가 어긋나는지 확인하는 용도)
+            # 빈 컬렉션은 HNSW 인덱스가 없어 쿼리가 실패하므로 건너뛰고,
+            # 특정 DB의 실패가 나머지 조사를 막지 않도록 개별 처리한다.
+            probe, probe_failed = {}, []
+            for _db, _col in collections.items():
+                try:
+                    if _col.count() == 0:
+                        continue
+                    r = _col.query(query_embeddings=[query_embeddings[0]],
+                                   n_results=1, include=["distances"])
+                    if r["distances"] and r["distances"][0]:
+                        probe[_db] = round(r["distances"][0][0], 4)
+                except Exception as e:
+                    probe_failed.append(f"{_db}({type(e).__name__})")
+            if probe:
+                best_db = min(probe, key=probe.get)
+                log.info("[4.검색] DB별 최상위 거리(낮을수록 유사): %s | 최근접=%s, 선택=%s%s",
+                         probe, best_db, db_name,
+                         "" if best_db == db_name else " ← 라우터와 불일치")
+            if probe_failed:
+                log.warning("[4.검색] 유사도 조사 실패한 DB: %s", ", ".join(probe_failed))
 
             query_kwargs = dict(
-                query_embeddings=[query_embedding],
+                query_embeddings=query_embeddings,
                 n_results=N_RESULTS[db_name],
                 include=["documents", "metadatas", "distances"],
             )
@@ -598,6 +699,18 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             if faction_hint in KNOWN_FACTIONS:
                 query_kwargs["where"] = {"faction": faction_hint}
 
+            # spearhead_db + 배틀팩 특정 시: 다른 배틀팩 청크 오염 차단
+            # (예: sand and bone 질문에 city-of-ash의 배틀 택틱이 섞이는 문제)
+            if db_name == "spearhead_db" and matched_battlepack:
+                other_packs = [
+                    s for s in BATTLEPACK_SOURCES.values() if s != matched_battlepack
+                ]
+                pack_filter = {"source": {"$nin": other_packs}}
+                if "where" in query_kwargs:
+                    query_kwargs["where"] = {"$and": [query_kwargs["where"], pack_filter]}
+                else:
+                    query_kwargs["where"] = pack_filter
+
             # rule_db: 소스 제외 필터 (패치/에라타, 과거 시즌 GHB)
             if db_name == "rule_db":
                 excluded_sources = []
@@ -612,8 +725,45 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                     else:
                         query_kwargs["where"] = src_filter
 
+            if "where" in query_kwargs:
+                log.info("[4.검색] 메타데이터 필터: %s", query_kwargs["where"])
+
             results = collection.query(**query_kwargs)
             #pprint.pp(results)
+
+            # 쿼리별 상위 5건 로그 (거리·출처·섹션)
+            for qi in range(len(results["ids"])):
+                q_label = "키워드" if qi == 0 else "원문"
+                for rank, (meta, dist) in enumerate(zip(
+                        results["metadatas"][qi][:5], results["distances"][qi][:5])):
+                    meta = meta or {}
+                    log.info("[5.결과] %s검색 %d위 d=%.4f | %s | %s",
+                             q_label, rank + 1, dist,
+                             meta.get("source", "?"),
+                             meta.get("section") or meta.get("unit_name") or meta.get("category") or "")
+
+            # 병행 검색 시: 쿼리 간 거리 스케일이 달라 거리순 병합은 한쪽이
+            # 독식하므로, 쿼리별 순위를 번갈아 채우는 방식으로 병합(중복 제거)
+            if len(query_embeddings) > 1 and results["ids"]:
+                per_query = [
+                    list(zip(ids, docs, metas, dists))
+                    for ids, docs, metas, dists in zip(
+                        results["ids"], results["documents"],
+                        results["metadatas"], results["distances"],
+                    )
+                ]
+                seen_ids, ranked = set(), []
+                for rank in range(max(len(rows) for rows in per_query)):
+                    for rows in per_query:
+                        if rank < len(rows) and rows[rank][0] not in seen_ids:
+                            seen_ids.add(rows[rank][0])
+                            ranked.append(rows[rank])
+                ranked = ranked[:N_RESULTS[db_name]]
+                results["ids"] = [[r[0] for r in ranked]]
+                results["documents"] = [[r[1] for r in ranked]]
+                results["metadatas"] = [[r[2] for r in ranked]]
+                results["distances"] = [[r[3] for r in ranked]]
+                log.info("[5.결과] 병행 검색 병합: %d개 문서 (rank interleave)", len(ranked))
 
             # faction_db + 팩션 특정 시: 전체 유닛 목록을 합성 문서로 주입.
             # 상위 N 유사도 검색은 룰 청크에 밀려 유닛을 놓치고, 애초에 전체
@@ -664,33 +814,76 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                             "type": "unit_roster",
                         })
                         results["ids"][0].insert(0, f"unit_roster_{faction_hint}")
+                        log.info("[5.보강] 팩션 로스터 주입: %s (유닛 %d개)", faction_hint, len(seen))
                 except Exception:
-                    pass
+                    log.warning("[5.보강] 팩션 로스터 주입 실패", exc_info=True)
 
             if db_name == "spearhead_db" and results["ids"] and len(results["ids"][0]) > 0:
                 try:
-                    # 검색된 결과들에서 출처 파일명(source)을 중복 없이 수집
-                    found_sources = list(set(
-                        meta.get("source", "") for meta in results["metadatas"][0]
-                        if meta.get("source", "").startswith("spearhead_")
-                    ))
-                    if found_sources:
-                        expanded_docs, expanded_metas, expanded_ids = [], [], []
-                        # 최대 2개의 박스(source)까지만 확장하여 통째로 불러옴
-                        for src in found_sources[:2]:
-                            box = collection.get(where={"source": src}, include=["documents", "metadatas"])
-                            if box["ids"]:
-                                expanded_docs.extend(box["documents"])
-                                expanded_metas.extend(box["metadatas"])
-                                expanded_ids.extend(box["ids"])
+                    def _norm_name(s: str) -> str:
+                        return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
 
-                        # 싹쓸이한 결과를 원본 검색 결과에 덮어씌움
-                        if expanded_ids:
-                            results["documents"][0] = expanded_docs
-                            results["metadatas"][0] = expanded_metas
-                            results["ids"][0] = expanded_ids
+                    # 검색된 결과에서 스피어헤드 이름을 순서 유지하며 중복 없이 수집
+                    # (배틀팩 청크에는 spearhead_name이 없으므로 자동 제외됨)
+                    found_names = []
+                    for meta in results["metadatas"][0]:
+                        nm = (meta or {}).get("spearhead_name")
+                        if nm and nm not in found_names:
+                            found_names.append(nm)
+
+                    # 질문에 실제로 언급된 스피어헤드를 우선 확장.
+                    # (search_query는 LLM이 오타를 교정한 정식 명칭이므로 함께 검사)
+                    query_text = _norm_name(search_query + " " + rewritten_query)
+                    named = [nm for nm in found_names if _norm_name(nm) in query_text]
+                    expand_names = (named or found_names)[:2]
+                    if found_names:
+                        log.info("[5.보강] 스피어헤드 확장: 검색됨=%s / 질문 언급=%s / 확장 대상=%s",
+                                 found_names, named, expand_names)
+
+                    expanded_docs, expanded_metas, expanded_ids = [], [], []
+                    # 스피어헤드 전체 구성(배틀 트레잇, 레지먼트 어빌리티,
+                    # 인핸스먼트, 워스크롤)을 통째로 불러옴
+                    for nm in expand_names:
+                        box = collection.get(where={"spearhead_name": nm},
+                                             include=["documents", "metadatas"])
+                        if box["ids"]:
+                            expanded_docs.extend(box["documents"])
+                            expanded_metas.extend(box["metadatas"])
+                            expanded_ids.extend(box["ids"])
+
+                    # 배틀팩 특정 시: 배틀 진행/시퀀스 질문에 대비해 해당
+                    # 배틀팩 문서 전체를 확장 (누락된 시퀀스 청크 방지)
+                    if matched_battlepack:
+                        box = collection.get(where={"source": matched_battlepack},
+                                             include=["documents", "metadatas"])
+                        if box["ids"]:
+                            expanded_docs.extend(box["documents"])
+                            expanded_metas.extend(box["metadatas"])
+                            expanded_ids.extend(box["ids"])
+
+                    # 확장분을 앞에 두고 기존 벡터 검색 결과는 유지하며 병합
+                    # (id 기준 중복 제거). 질문이 특정 스피어헤드를 지목한
+                    # 경우, 임베딩 노이즈로 걸린 다른 스피어헤드 청크는 제외
+                    if expanded_ids:
+                        seen_exp = set(expanded_ids)
+                        for _id, doc, meta in zip(results["ids"][0],
+                                                  results["documents"][0],
+                                                  results["metadatas"][0]):
+                            if _id in seen_exp:
+                                continue
+                            other_nm = (meta or {}).get("spearhead_name")
+                            if named and other_nm and other_nm not in expand_names:
+                                continue
+                            expanded_ids.append(_id)
+                            expanded_docs.append(doc)
+                            expanded_metas.append(meta)
+                        results["documents"][0] = expanded_docs
+                        results["metadatas"][0] = expanded_metas
+                        results["ids"][0] = expanded_ids
+                        log.info("[5.보강] 확장 후 문서 %d개 (배틀팩 전체 포함: %s)",
+                                 len(expanded_ids), bool(matched_battlepack))
                 except Exception:
-                    pass
+                    log.warning("[5.보강] 스피어헤드 확장 실패", exc_info=True)
 
             # 벡터 검색 결과에 search_query 키워드가 없으면 키워드 폴백 검색
             def _keyword_hit(docs: list, keyword: str) -> bool:
@@ -728,6 +921,8 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 and not any((m or {}).get("type") == "warscroll" for m in flat_metas)
             )
             if search_query and (not _keyword_hit(flat_docs, search_query) or force_warscroll_fallback):
+                log.info("[5.폴백] 벡터 결과에 키워드 %r 없음%s → 키워드 폴백 검색 시도",
+                         search_query, " (워스크롤 강제)" if force_warscroll_fallback else "")
                 try:
                     warscroll_only = db_name in ("faction_db", "spearhead_db")
                     fallback = _fallback_search(collection, search_query,
@@ -737,9 +932,11 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                         results["documents"][0] = fallback["documents"] + flat_docs
                         results["metadatas"][0] = fallback["metadatas"] + results["metadatas"][0]
                         flat_docs = results["documents"][0]
-
+                        log.info("[5.폴백] 키워드 폴백 성공: %d개 문서 추가", len(fallback["ids"]))
+                    else:
+                        log.info("[5.폴백] 키워드 폴백 결과 없음")
                 except Exception:
-                    pass
+                    log.warning("[5.폴백] 키워드 폴백 실패", exc_info=True)
 
             # faction_db에서도 못 찾으면 spearhead_db에서 크로스 검색
             if db_name == "faction_db" and search_query and not _keyword_hit(flat_docs, search_query):
@@ -767,8 +964,10 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                         results["metadatas"][0] = sp_fallback["metadatas"] + results["metadatas"][0]
                         # flat_docs 변수 갱신
                         flat_docs = results["documents"][0]
+                        log.info("[5.폴백] spearhead_db 크로스 검색 성공: %d개 문서 추가",
+                                 len(sp_fallback["ids"]))
                 except Exception:
-                    pass
+                    log.warning("[5.폴백] spearhead_db 크로스 검색 실패", exc_info=True)
 
             # 4. 컨텍스트 조합
             retrieved_context = ""
@@ -814,6 +1013,10 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                     sources_info.append(f"- {display_name} ({source_file})")
             else:
                 retrieved_context = "관련 문서를 찾을 수 없습니다."
+                log.warning("[6.컨텍스트] 검색 결과 0건")
+
+            n_ctx_docs = len(results["documents"][0]) if results["ids"] and results["ids"][0] else 0
+            log.info("[6.컨텍스트] 최종: 문서 %d개, %d자", n_ctx_docs, len(retrieved_context))
 
             # 5. 에이전틱 루프: RAG 컨텍스트 + Tool Use
             # 답변 모델은 대화 이력을 받지 않으므로, 문맥이 반영된 재작성 질문을 전달
@@ -840,6 +1043,7 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             all_thinking = []
             tool_calls_log = []      # UI 표시용
             MAX_TURNS = 5
+            answer_t0 = time.monotonic()
 
             for _ in range(MAX_TURNS):
                 response = gemini_client.models.generate_content(
@@ -889,6 +1093,9 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             for p in response.candidates[0].content.parts
             if not getattr(p, "thought", False) and not p.function_call
         )
+        log.info("[7.답변] 완료: model=%s, 생성 %.1fs / 전체 %.1fs, 도구호출 %d회, %d자",
+                 ANSWER_MODEL, time.monotonic() - answer_t0,
+                 time.monotonic() - pipeline_t0, len(tool_calls_log), len(answer_text))
 
         # 도구 실행 결과 표시
         if tool_calls_log:

@@ -126,7 +126,7 @@ TEST_QUERIES = [
     },
 ]
 
-OUTPUT_DIR = Path("./outputs/rule_db")
+OUTPUT_DIR = Path("./data/outputs/rule_db")
 
 
 # ─── 코퍼스 로드 ─────────────────────────────────────────────────────────────

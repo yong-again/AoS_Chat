@@ -78,12 +78,12 @@ def load_json(path: str | Path) -> Any:
 
 def default_cache_path() -> Path:
     """스크래핑 결과(pdf index) 캐시 경로."""
-    return project_dir() / "data.json"
+    return project_dir() / "data" / "data.json"
 
 
 def default_outputs_dir() -> Path:
     """추출 결과(JSON) 저장 루트 디렉터리."""
-    return ensure_dir(project_dir() / "outputs")
+    return ensure_dir(project_dir() / "data" / "outputs")
 
 
 def build_output_path(

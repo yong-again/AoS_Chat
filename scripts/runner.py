@@ -45,5 +45,5 @@ if __name__ == "__main__":
     keyword = args.keyword
     single = build_single_doc_data(data, keyword=keyword)
 
-    process_aos_pipeline(pdf_data_dict=single, config_path=env_path, output_dir="./outputs", dry_run=False)
+    process_aos_pipeline(pdf_data_dict=single, config_path=env_path, output_dir="./data/outputs_debug", dry_run=False)
 

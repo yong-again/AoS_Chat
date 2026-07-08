@@ -14,8 +14,8 @@ from sentence_transformers import SentenceTransformer
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # ─── 채팅 내역 저장 ───────────────────────────────────────────────────────────
-HISTORY_DIR = "chat_history"
-LOG_DIR = "chat_logs"
+HISTORY_DIR = "runtime/chat_history"
+LOG_DIR = "runtime/chat_logs"
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 

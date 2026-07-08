@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 # JSON 파일들이 저장된 최상위 폴더 경로 (상황에 맞게 수정하세요)
-OUTPUT_DIR = "./outputs" 
+OUTPUT_DIR = "./data/outputs" 
 
 def validate_faction_db(data, filename):
     errors = []

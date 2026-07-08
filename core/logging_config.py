@@ -18,7 +18,7 @@ from pathlib import Path
 
 # 기본값
 DEFAULT_LOG_LEVEL = os.environ.get("AOS_LOG_LEVEL", "INFO").upper()
-DEFAULT_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"  # AoS_Chat/logs
+DEFAULT_LOG_DIR = Path(__file__).resolve().parent.parent / "runtime" / "logs"  # AoS_Chat/runtime/logs
 DEFAULT_LOG_FILE = "aos_chat.log"
 MAX_BYTES = 2 * 1024 * 1024  # 2MB
 BACKUP_COUNT = 5
@@ -99,6 +99,11 @@ def setup_logging(
         root.addHandler(fh)
     except OSError:
         root.warning("로그 파일을 열 수 없어 파일 로깅을 건너뜁니다: %s", filepath)
+
+    # 서드파티 라이브러리의 수다스러운 INFO 로그 억제
+    # (httpx: 요청마다 1줄, google_genai: 호출마다 AFC 안내 1줄)
+    for noisy in ("httpx", "httpcore", "google_genai", "google_genai.models"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     _root_configured = True
 

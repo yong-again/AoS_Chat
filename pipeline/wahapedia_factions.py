@@ -50,7 +50,7 @@ from pipeline.wahapedia_rules import (
 log = get_logger(__name__)
 
 BASE_URL = "https://wahapedia.ru/aos4/factions/{slug}/"
-DATA_DIR = project_dir() / "wahapedia_factions"
+DATA_DIR = project_dir() / "data" / "wahapedia_factions"
 REQUEST_DELAY_S = 1.0
 REQUEST_TIMEOUT_S = 60
 
