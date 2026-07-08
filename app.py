@@ -728,7 +728,23 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             if "where" in query_kwargs:
                 log.info("[4.검색] 메타데이터 필터: %s", query_kwargs["where"])
 
-            results = collection.query(**query_kwargs)
+            try:
+                results = collection.query(**query_kwargs)
+            except chromadb.errors.ChromaError as e:
+                # 앱 실행 중 외부에서 DB가 재빌드/컴팩션되면 캐시된 컬렉션
+                # 핸들이 사라진 세그먼트 파일을 가리켜 'hnsw segment reader:
+                # Nothing found on disk' 오류가 난다. Streamlit 리소스 캐시와
+                # chromadb 프로세스 내 클라이언트 캐시를 모두 비우고 핸들을
+                # 새로 받아 1회 재시도한다.
+                log.warning("[4.검색] Chroma 핸들 무효화 감지(%s: %s) → 리소스 재로딩 후 재시도",
+                            type(e).__name__, str(e)[:120])
+                st.cache_resource.clear()
+                from chromadb.api.client import SharedSystemClient
+                SharedSystemClient.clear_system_cache()
+                gemini_client, embed_model, collections = load_resources()
+                collection = collections[db_name]
+                results = collection.query(**query_kwargs)
+                log.info("[4.검색] 재시도 성공")
             #pprint.pp(results)
 
             # 쿼리별 상위 5건 로그 (거리·출처·섹션)
