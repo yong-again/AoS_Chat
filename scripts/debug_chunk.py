@@ -65,7 +65,56 @@ def parse_args() -> argparse.Namespace:
                    help="처리할 문서 수 (기본값: 10, 0=전체)")
     p.add_argument("--seed", type=int, default=None, help="샘플 랜덤 시드 (재현용)")
     p.add_argument("--dry-run", action="store_true", help="청킹만 확인, Gemini 호출 생략")
+    p.add_argument("--overlap-test", action="store_true",
+                   help="_split_long_text 슬라이딩 윈도우 오버랩 검증 후 종료")
     return p.parse_args()
+
+
+# ── 오버랩 검증 ──────────────────────────────────────────────────────────────
+
+def run_overlap_test() -> None:
+    """_split_long_text의 청크 간 오버랩을 합성/실측 텍스트로 검증."""
+    from core.scrape_config import CHUNK_OVERLAP_CHARS, MAX_CHUNK_CHARS
+    from pipeline.wahapedia_rules import _split_long_text
+
+    def verify(name: str, text: str) -> bool:
+        parts = _split_long_text(text)
+        print(f"\n[{name}] 원문 {len(text):,}자 → {len(parts)}개 청크 "
+              f"(max={MAX_CHUNK_CHARS}, overlap≈{CHUNK_OVERLAP_CHARS})")
+        ok = True
+        for i, part in enumerate(parts):
+            if len(part) > MAX_CHUNK_CHARS:
+                print(f"  ❌ 청크{i + 1} 길이 초과: {len(part)}자")
+                ok = False
+        for i in range(len(parts) - 1):
+            head = parts[i + 1][:CHUNK_OVERLAP_CHARS]
+            # 다음 청크 머리가 이전 청크 꼬리와 겹치는지 (문장 경계 조정 감안해
+            # 머리의 첫 40자가 이전 청크 끝부분에 존재하는지 확인)
+            probe = head[:40]
+            overlap_found = probe and probe in parts[i][-(CHUNK_OVERLAP_CHARS + 60):]
+            status = "✅" if overlap_found else "❌"
+            if not overlap_found:
+                ok = False
+            print(f"  {status} 경계 {i + 1}→{i + 2}: "
+                  f"…{parts[i][-50:]!r} ⇢ {parts[i + 1][:50]!r}…")
+        return ok
+
+    # 1) 합성 텍스트: 번호 붙은 문장으로 경계 추적이 쉬움
+    synthetic = " ".join(f"Sentence number {n:03d} explains rule detail {n}." for n in range(120))
+    ok1 = verify("합성 텍스트", synthetic)
+
+    # 2) 실측 텍스트: 스크래핑 캐시의 섹션들을 이어붙여 실제 룰 문장으로 검증
+    ok2 = True
+    cache = Path("data/wahapedia_rules/the-core-rules.json")
+    if cache.exists():
+        chunks = json.loads(cache.read_text(encoding="utf-8"))
+        real = " ".join(c["text"] for c in chunks[:8])
+        ok2 = verify("실측 텍스트 (the-core-rules)", real)
+    else:
+        print("\n(실측 검증 스킵: data/wahapedia_rules/the-core-rules.json 없음)")
+
+    print(f"\n=== 오버랩 검증 {'통과 ✅' if ok1 and ok2 else '실패 ❌'} ===")
+    sys.exit(0 if ok1 and ok2 else 1)
 
 
 # ── 유틸 ────────────────────────────────────────────────────────────────────
@@ -257,6 +306,8 @@ def process_doc(task: dict, client: genai.Client | None, dry_run: bool) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.overlap_test:
+        run_overlap_test()
     DEBUG_DIR.mkdir(exist_ok=True)
 
     # data.json 로드

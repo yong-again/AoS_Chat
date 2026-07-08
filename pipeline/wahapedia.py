@@ -37,25 +37,54 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from core.logging_config import get_logger
+from core.scrape_config import (
+    REQUEST_DELAY_S,
+    REQUEST_TIMEOUT_S,
+    RE_BASE_SIZE,
+    RE_DECLARE,
+    RE_EFFECT,
+    RE_NON_WORD,
+    RE_POINTS,
+    RE_REGIMENT_OPTIONS,
+    RE_REINFORCED,
+    RE_UNIT_SIZE,
+    RE_WHITESPACE,
+    USER_AGENT,
+    WS_ABILITY_BODY,
+    WS_ABILITY_HEADER_CLASS,
+    WS_ADD_NAME,
+    WS_BATTLE_PROFILE,
+    WS_CELL_CLASS,
+    WS_DATA_CELL_LONG,
+    WS_DATASHEET,
+    WS_HEADER,
+    WS_KEYWORD_LINES,
+    WS_PIC_SEARCH,
+    WS_ROW_DATA_CLASS,
+    WS_ROW_DATA_SHORT_CLASS,
+    WS_ROW_HEADER_CLASS,
+    WS_STAT_CONTROL,
+    WS_STAT_HEALTH,
+    WS_STAT_MOVE,
+    WS_STAT_SAVE,
+    WS_STAT_WARD,
+    WS_STATS_PROFILE,
+    WS_WEAPON_ABILITY,
+    WS_WEAPON_TABLE,
+)
 from core.utils import ensure_dir, load_json, project_dir, save_json
 from pipeline.factions import FACTIONS
 
 log = get_logger(__name__)
 
 BASE_URL = "https://wahapedia.ru/aos4/factions/{slug}/warscrolls.html"
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-)
 DATA_DIR = project_dir() / "data" / "warscolls"
-REQUEST_DELAY_S = 1.0  # 팩션 페이지 요청 사이 대기(예의상)
-REQUEST_TIMEOUT_S = 60
 
 
 def _text(node: Tag | None) -> str:
     if node is None:
         return ""
-    return re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
+    return RE_WHITESPACE.sub(" ", node.get_text(" ", strip=True)).strip()
 
 
 def _parse_stat(value: str) -> str:
@@ -67,28 +96,28 @@ def _parse_stat(value: str) -> str:
 def _parse_weapons(datasheet: Tag) -> tuple[list[dict], list[dict]]:
     ranged: list[dict] = []
     melee: list[dict] = []
-    table = datasheet.select_one("table.wTable")
+    table = datasheet.select_one(WS_WEAPON_TABLE)
     if table is None:
         return ranged, melee
 
     current = None
     for tr in table.find_all("tr"):
         classes = tr.get("class") or []
-        if "wsHeaderRow" in classes:
+        if WS_ROW_HEADER_CLASS in classes:
             header = _text(tr).upper()
             if "RANGED" in header:
                 current = ranged
             elif "MELEE" in header:
                 current = melee
             continue
-        if "wsDataRow" in classes and "wsDataRow_short" not in classes:
-            cells = [td for td in tr.find_all("td") if "wsCell" in (td.get("class") or [])]
+        if WS_ROW_DATA_CLASS in classes and WS_ROW_DATA_SHORT_CLASS not in classes:
+            cells = [td for td in tr.find_all("td") if WS_CELL_CLASS in (td.get("class") or [])]
             # 행마다 td.wsDataCell_long이 여러 개 있으며, 무기 이름은 텍스트가
             # 있는 첫 셀에 있음(나머지는 레이아웃용 빈 칸)
             name = ""
             abilities = []
-            for name_td in tr.select("td.wsDataCell_long"):
-                for ab in name_td.select(".wsWeaponAbility"):
+            for name_td in tr.select(WS_DATA_CELL_LONG):
+                for ab in name_td.select(WS_WEAPON_ABILITY):
                     ab_text = _text(ab)
                     if ab_text:
                         abilities.append(ab_text)
@@ -134,23 +163,23 @@ def _parse_battle_profile(datasheet: Tag) -> dict:
         "can_be_reinforced": False,
         "regiment_options": "",
     }
-    box = datasheet.select_one(".PitchedBattleProfile")
+    box = datasheet.select_one(WS_BATTLE_PROFILE)
     if box is None:
         return profile
     text = _text(box)
-    m = re.search(r"Unit Size\s*:?\s*(\d+)", text)
+    m = RE_UNIT_SIZE.search(text)
     if m:
         profile["unit_size"] = int(m.group(1))
-    m = re.search(r"Points\s*:?\s*(\d+)", text)
+    m = RE_POINTS.search(text)
     if m:
         profile["points"] = int(m.group(1))
-    m = re.search(r"Base size\s*:?\s*([\d×x.\s]+mm)", text)
+    m = RE_BASE_SIZE.search(text)
     if m:
         profile["base_size"] = m.group(1).strip()
-    m = re.search(r"Can be reinforced\s*:?\s*(Yes|No)", text, re.I)
+    m = RE_REINFORCED.search(text)
     if m:
         profile["can_be_reinforced"] = m.group(1).lower() == "yes"
-    m = re.search(r"Regiment Options\s*:?\s*(.+)$", text)
+    m = RE_REGIMENT_OPTIONS.search(text)
     if m:
         profile["regiment_options"] = m.group(1).strip()
     return profile
@@ -158,18 +187,18 @@ def _parse_battle_profile(datasheet: Tag) -> dict:
 
 def _parse_abilities(datasheet: Tag) -> list[dict]:
     abilities = []
-    for body in datasheet.select(".abBody"):
+    for body in datasheet.select(WS_ABILITY_BODY):
         # 발동 타이밍 헤더는 바디 바로 앞 테이블의 td.abHeader에 있음
-        header_td = body.find_previous("td", class_="abHeader")
+        header_td = body.find_previous("td", class_=WS_ABILITY_HEADER_CLASS)
         name_tag = body.find("b")
         name = _text(name_tag).rstrip(":") if name_tag else ""
         full = _text(body)
         declare = ""
         effect = ""
-        m = re.search(r"Declare\s*:\s*(.*?)(?:Effect\s*:|$)", full, re.S)
+        m = RE_DECLARE.search(full)
         if m:
             declare = m.group(1).strip()
-        m = re.search(r"Effect\s*:\s*(.*)$", full, re.S)
+        m = RE_EFFECT.search(full)
         if m:
             effect = m.group(1).strip()
         abilities.append(
@@ -185,7 +214,7 @@ def _parse_abilities(datasheet: Tag) -> list[dict]:
 
 def _parse_keywords(datasheet: Tag) -> list[str]:
     keywords: list[str] = []
-    for line in datasheet.select(".wsKeywordLine1, .wsKeywordLine2"):
+    for line in datasheet.select(WS_KEYWORD_LINES):
         # 키워드 문구는 쉼표로 구분되며, 한 문구는 인접한 span.kwb 여러 개로
         # 이루어질 수 있음("STORMCAST ETERNALS"는 span 두 개)
         for phrase in _text(line).split(","):
@@ -201,37 +230,37 @@ def parse_warscrolls(html: str, faction_slug: str) -> list[dict]:
     faction = FACTIONS[faction_slug]
     warscrolls = []
 
-    for ds in soup.select("div.datasheet"):
-        header = ds.select_one(".wsHeaderIn")
+    for ds in soup.select(WS_DATASHEET):
+        header = ds.select_one(WS_HEADER)
         if header is None:
             continue
         # 이름에 부제 div(.wsAddName)가 붙을 수 있음. 예: "on Dracoth"
-        add = header.select_one(".wsAddName")
+        add = header.select_one(WS_ADD_NAME)
         add_name = _text(add) if add else ""
         if add:
             add.extract()
         # 이미지 검색 아이콘 제거
-        for icon in header.select(".picSearch"):
+        for icon in header.select(WS_PIC_SEARCH):
             icon.extract()
         name = _text(header)
         if add_name:
             name = f"{name} {add_name}"
 
         # 워드 세이브가 있는 유닛은 .AoS_profile_Ward(.wsWard div 추가) 사용
-        stats = ds.select_one(".AoS_profile, .AoS_profile_Ward")
+        stats = ds.select_one(WS_STATS_PROFILE)
         anchor = ds.find("a", attrs={"name": True})
         ranged, melee = _parse_weapons(ds)
         ws = {
-            "id": anchor["name"] if anchor else re.sub(r"\W+", "-", name),
+            "id": anchor["name"] if anchor else RE_NON_WORD.sub("-", name),
             "name": name,
             "faction": faction["name"],
             "faction_slug": faction_slug,
             "grand_alliance": faction["alliance"],
-            "move": _parse_stat(_text(stats.select_one(".wsMove")) if stats else ""),
-            "health": _parse_stat(_text(stats.select_one(".wsWounds")) if stats else ""),
-            "save": _parse_stat(_text(stats.select_one(".wsSave")) if stats else ""),
-            "control": _parse_stat(_text(stats.select_one(".wsBravery")) if stats else ""),
-            "ward": _parse_stat(_text(stats.select_one(".wsWard")) if stats else ""),
+            "move": _parse_stat(_text(stats.select_one(WS_STAT_MOVE)) if stats else ""),
+            "health": _parse_stat(_text(stats.select_one(WS_STAT_HEALTH)) if stats else ""),
+            "save": _parse_stat(_text(stats.select_one(WS_STAT_SAVE)) if stats else ""),
+            "control": _parse_stat(_text(stats.select_one(WS_STAT_CONTROL)) if stats else ""),
+            "ward": _parse_stat(_text(stats.select_one(WS_STAT_WARD)) if stats else ""),
             "ranged_weapons": ranged,
             "melee_weapons": melee,
             "abilities": _parse_abilities(ds),

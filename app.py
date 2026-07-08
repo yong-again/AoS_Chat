@@ -12,6 +12,7 @@ from tools import calculate_expected_damage
 import pprint
 import time
 from core.logging_config import setup_logging, get_logger
+from core.hybrid_search import BM25Index, rrf_fuse
 
 # 파이프라인 전 과정 로그: 콘솔 + runtime/logs/aos_chat.log (AOS_LOG_LEVEL로 레벨 조정)
 setup_logging()
@@ -354,6 +355,12 @@ def load_resources():
         for name in DB_LABELS
     }
     return gemini_client, embed_model, collections
+
+@st.cache_resource
+def load_bm25_index(db_name: str) -> BM25Index:
+    """컬렉션 전체 문서로 BM25 인덱스를 구축 (DB별 1회, 캐시)."""
+    _, _, cols = load_resources()
+    return BM25Index.from_collection(cols[db_name])
 
 # ─── LLM 유틸리티 함수 ────────────────────────────────────────────────────────
 # 2. 쿼리 확장 함수 수정 (원본 질문 유지 + 영어 번역 병기)
@@ -780,6 +787,50 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 results["metadatas"] = [[r[2] for r in ranked]]
                 results["distances"] = [[r[3] for r in ranked]]
                 log.info("[5.결과] 병행 검색 병합: %d개 문서 (rank interleave)", len(ranked))
+
+            # 하이브리드 검색: BM25 희소 검색 결과를 RRF로 병합.
+            # 메타데이터 하드 필터(where)는 BM25 측에도 동일하게 적용된다.
+            try:
+                bm25_index = load_bm25_index(db_name)
+                bm25_query = f"{search_query} {rewritten_query}".strip()
+                bm25_ids = bm25_index.search(
+                    bm25_query,
+                    n_results=N_RESULTS[db_name],
+                    where=query_kwargs.get("where"),
+                )
+                dense_ids = results["ids"][0] if results["ids"] else []
+                if bm25_ids:
+                    fused_ids, _ = rrf_fuse(
+                        [dense_ids, bm25_ids], top_n=N_RESULTS[db_name])
+                    dense_map = {
+                        _id: (doc, meta, dist)
+                        for _id, doc, meta, dist in zip(
+                            dense_ids,
+                            results["documents"][0],
+                            results["metadatas"][0],
+                            results["distances"][0],
+                        )
+                    }
+                    fused_docs, fused_metas, fused_dists = [], [], []
+                    for _id in fused_ids:
+                        if _id in dense_map:
+                            doc, meta, dist = dense_map[_id]
+                        else:   # BM25 단독 진입 문서
+                            doc = bm25_index.doc_by_id.get(_id, "")
+                            meta = bm25_index.meta_by_id.get(_id, {})
+                            dist = None
+                        fused_docs.append(doc)
+                        fused_metas.append(meta)
+                        fused_dists.append(dist)
+                    new_from_bm25 = sum(1 for _id in fused_ids if _id not in dense_map)
+                    results["ids"] = [fused_ids]
+                    results["documents"] = [fused_docs]
+                    results["metadatas"] = [fused_metas]
+                    results["distances"] = [fused_dists]
+                    log.info("[5.하이브리드] 밀집 %d건 + BM25 %d건 → RRF 병합 %d건 (BM25 단독 진입 %d건)",
+                             len(dense_ids), len(bm25_ids), len(fused_ids), new_from_bm25)
+            except Exception:
+                log.warning("[5.하이브리드] BM25 검색 실패 — 밀집 검색 결과만 사용", exc_info=True)
 
             # faction_db + 팩션 특정 시: 전체 유닛 목록을 합성 문서로 주입.
             # 상위 N 유사도 검색은 룰 청크에 밀려 유닛을 놓치고, 애초에 전체

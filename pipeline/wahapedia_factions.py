@@ -37,40 +37,43 @@ from bs4 import BeautifulSoup, NavigableString, Tag
 from core.logging_config import get_logger
 from core.utils import ensure_dir, load_json, project_dir, save_json
 from pipeline.factions import FACTIONS
-from pipeline.wahapedia_rules import (
+from core.scrape_config import (
     HEADING_LEVELS,
     MIN_CHUNK_CHARS,
     NOISE_SELECTORS,
+    REQUEST_DELAY_S,
+    REQUEST_TIMEOUT_S,
+    SKIP_MODE_MARKERS,
+    SPEARHEAD_MARKER,
     SKIP_SECTIONS,
+    STRIP_TAGS,
+    TOC_HEADER_SELECTOR,
     USER_AGENT,
-    _norm,
-    _split_long_text,
+    WRAPPER_SELECTORS,
 )
+from pipeline.wahapedia_rules import _norm, _split_long_text
 
 log = get_logger(__name__)
 
 BASE_URL = "https://wahapedia.ru/aos4/factions/{slug}/"
 DATA_DIR = project_dir() / "data" / "wahapedia_factions"
-REQUEST_DELAY_S = 1.0
-REQUEST_TIMEOUT_S = 60
-
-# h2 제목으로 구간(모드)을 전환하는 마커
-SPEARHEAD_MARKER = "SPEARHEAD"
-SKIP_MODE_MARKERS = {"PATH TO GLORY"}  # 앱 DB 분류에 없는 모드 — 스킵
 
 
 def parse_faction_page(html: str, faction_slug: str) -> list[dict]:
     """팩션 루트 페이지 HTML을 target(DB) 태그가 붙은 청크 리스트로 파싱."""
     faction = FACTIONS[faction_slug]
     soup = BeautifulSoup(html, "html.parser")
-    wrapper = soup.select_one("#wrapper2") or soup.select_one("#wrapper") or soup
+    wrapper = next(
+        (w for sel in WRAPPER_SELECTORS if (w := soup.select_one(sel)) is not None),
+        soup,
+    )
 
-    for tag in wrapper.find_all(["script", "style", "noscript"]):
+    for tag in wrapper.find_all(list(STRIP_TAGS)):
         tag.decompose()
     for sel in NOISE_SELECTORS:
         for tag in wrapper.select(sel):
             tag.decompose()
-    for toc_header in wrapper.select(".contents_header"):
+    for toc_header in wrapper.select(TOC_HEADER_SELECTOR):
         target = toc_header.parent if toc_header.parent and toc_header.parent.name == "span" else toc_header
         target.decompose()
 

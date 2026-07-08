@@ -1,111 +1,94 @@
+"""
+벡터(밀집) / BM25(희소) / 하이브리드(RRF) 검색 비교 CLI.
+
+LLM 라우팅·키워드 추출 없이 검색 계층만 직접 테스트한다.
+
+사용법 (프로젝트 루트에서):
+    uv run python -m scripts.db_query "healing" --db rule_db
+    uv run python -m scripts.db_query "Grundstok Trailblazers" --db spearhead_db
+    uv run python -m scripts.db_query "Vanari Auralan Wardens" --db faction_db --faction "lumineth realm lords"
+"""
+import argparse
+
 import chromadb
-from app import generate_search_query, route_query
-from dotenv import dotenv_values
 from sentence_transformers import SentenceTransformer
-import google.genai as genai
-import pprint
 
+from core.hybrid_search import BM25Index, rrf_fuse
+from core.logging_config import get_logger
 
-ROUTER_MODEL = "gemini-2.5-flash-lite"
-ANSWER_MODEL = "gemini-2.5-flash"
-EMBED_MODEL  = "intfloat/multilingual-e5-base"
+log = get_logger(__name__)
 
-DB_LABELS = {
-    "rule_db":      "📖 코어 룰",
-    "faction_db":   "⚔️ 팩션 DB",
-    "balance_db":   "⚖️ 포인트 DB",
-    "spearhead_db": "🏹 스피어헤드 DB",
-    "other_db":     "📜 특수 캠페인 DB",
-}
-ROUTER_PROMPT = """
-사용자의 질문을 분석하여 아래 5개 카테고리 중 가장 적합한 것을 하나만 선택하세요.
-- 질문에 포인트, 점수, 비용, points, 부대 편성 등의 단어가 있으면 무조건 balance_db 를 선택하세요.
-- 질문에 "스피어헤드"라는 단어가 있거나, 스피어헤드 고유 명칭(예: Grundstok Trailblazers, Yndrasta's Spearhead, Ironjawz Waaagh!, Dawnbringers 등 팩션명+Spearhead 형태 또는 스피어헤드 세트 이름)이 포함되어 있으면 무조건 spearhead_db를 선택하세요.
-- 반드시 카테고리 이름(영문, 예: rule_db)만 출력하고 다른 텍스트는 절대 포함하지 마세요.
-
-rule_db      : 코어 룰, 턴 진행 순서, 일반적인 게임 메커니즘 (이동, 슈팅, 전투, 마법, 차지 등)
-faction_db   : 특정 유닛의 스탯, 무기, 팩션 고유 능력, 워스크롤
-balance_db   : 유닛의 포인트 가격, 부대 편성 제한, 레지먼트
-spearhead_db : 스피어헤드 모드 전용 룰, 스피어헤드 세트 구성(warscrolls), 스피어헤드 고유 규칙(spearhead_rules)
-other_db     : 특수 캠페인 룰 (예: 기란의 재앙)
-
-사용자 질문: {query}"""
-
-
+EMBED_MODEL = "intfloat/multilingual-e5-base"
 DB_PATH = "./my_warhammer_db"
-config = dotenv_values(".env")
-
-gemini_client = genai.Client(api_key=config["GEMINI_API_KEY"])
-chroma_client = chromadb.PersistentClient(path="./my_warhammer_db")
-embed_model = SentenceTransformer(EMBED_MODEL)
-collections = {
-    name: chroma_client.get_collection(name=name)
-    for name in DB_LABELS
-}
-
-user_query = "루미네스 렐름로드의 병력 종류를 알려줘."
-
-# 1. 라우터: '사용자의 원본 질문'으로 의도를 파악하여 DB 결정
-db_name = route_query(user_query, gemini_client)
-print('-'*50)
-print("DB Name")
-print(f'{db_name}')
-
-# 2. 검색 쿼리 추출: 벡터 DB에 던질 '순수 영어 키워드'만 생성
-search_query = generate_search_query(user_query, db_name, gemini_client)
-faction_hint = search_query.lower().replace("-", " ").strip()
-#print(search_query)
-
-_q = search_query if search_query else user_query
-query_embedding = embed_model.encode("query: " + _q).tolist()
-collection = collections[db_name]
-#print(collection)
-
-#pprint.pp(collection.get())
-# query_texts uses Chroma's default embedder (384-dim), not EMBED_MODEL (768).
-print('-'*50)
-print("Faction Hint")
-print(faction_hint)
-
-print('-'*50)
-print("query embedding")
-pprint.pp(query_embedding)
-# pprint.pp(collection.query(
-#     query_embeddings=[query_embedding],
-#     n_results=10,
-#     where={"faction":faction_hint},
-#     include=["documents", "metadatas", "distances"],
-# ))
-
-N_RESULTS = {
-    "rule_db":      5,
-    "faction_db":   15,
-    "balance_db":   60,
-    "spearhead_db": 10,
-    "other_db":     5,
-}
-
-query_kwargs = dict(
-    query_embeddings=[query_embedding],
-    n_results=N_RESULTS[db_name],
-    include=["documents", "metadatas", "distances"],
-)
-
-#print(query_kwargs)
-
-if db_name == "rule_db":
-    query_kwargs["where"] = {"source": {"$ne": "rules_updates.json"}}
-
-results = collection.query(**query_kwargs)
-
-print('-'*50)
-print("Query Results")
-pprint.pp(results)
+DBS = ("rule_db", "faction_db", "balance_db", "spearhead_db", "other_db")
 
 
-#for id in collections:
-    #pprint.pp(id)
+def _label(meta: dict) -> str:
+    meta = meta or {}
+    src = (meta.get("source") or "?").replace("wahapedia_", "").replace(".json", "")
+    sec = meta.get("section") or meta.get("unit_name") or meta.get("category") or ""
+    return f"{src} | {sec}"
 
 
+def main() -> None:
+    ap = argparse.ArgumentParser(description="밀집/BM25/하이브리드 검색 비교")
+    ap.add_argument("query", help="검색 질의 (영어 키워드 권장)")
+    ap.add_argument("--db", default="rule_db", choices=DBS)
+    ap.add_argument("--n", type=int, default=10, help="결과 수 (기본 10)")
+    ap.add_argument("--faction", default=None,
+                    help='메타데이터 하드 필터, 예: "kharadron overlords"')
+    args = ap.parse_args()
+
+    where = {"faction": args.faction} if args.faction else None
+
+    client = chromadb.PersistentClient(path=DB_PATH)
+    collection = client.get_collection(args.db)
+    print(f"DB: {args.db} ({collection.count()}개 문서)  |  질의: {args.query!r}"
+          f"  |  필터: {where}")
+
+    # 1) 밀집 벡터 검색
+    model = SentenceTransformer(EMBED_MODEL)
+    emb = model.encode("query: " + args.query).tolist()
+    kwargs = dict(query_embeddings=[emb], n_results=args.n,
+                  include=["documents", "metadatas", "distances"])
+    if where:
+        kwargs["where"] = where
+    dense = collection.query(**kwargs)
+    dense_ids = dense["ids"][0]
+    dense_meta = dict(zip(dense_ids, dense["metadatas"][0]))
+    dense_dist = dict(zip(dense_ids, dense["distances"][0]))
+
+    # 2) BM25 희소 검색 (동일 where 필터 적용)
+    index = BM25Index.from_collection(collection)
+    bm25_ids = index.search(args.query, n_results=args.n, where=where)
+
+    # 3) RRF 병합
+    fused_ids, rrf_scores = rrf_fuse([dense_ids, bm25_ids], top_n=args.n)
+
+    def meta_of(_id: str) -> dict:
+        return dense_meta.get(_id) or index.meta_by_id.get(_id) or {}
+
+    print(f"\n─── 밀집 벡터 (top {len(dense_ids)}) " + "─" * 40)
+    for i, _id in enumerate(dense_ids):
+        print(f"{i+1:2d}. d={dense_dist[_id]:.4f}  {_label(meta_of(_id))}")
+
+    print(f"\n─── BM25 (top {len(bm25_ids)}) " + "─" * 40)
+    for i, _id in enumerate(bm25_ids):
+        print(f"{i+1:2d}. {_label(meta_of(_id))}")
+
+    print(f"\n─── 하이브리드 RRF (top {len(fused_ids)}) " + "─" * 40)
+    for i, _id in enumerate(fused_ids):
+        origin = ("D" if _id in dense_dist else "-") + ("B" if _id in bm25_ids else "-")
+        print(f"{i+1:2d}. rrf={rrf_scores[_id]:.4f} [{origin}]  {_label(meta_of(_id))}")
+    print("\n[D-]=밀집 단독, [-B]=BM25 단독, [DB]=양쪽 모두")
+
+    # 하드 필터 검증
+    if where:
+        bad = [(_id, meta_of(_id)) for _id in fused_ids
+               if meta_of(_id).get("faction") != args.faction]
+        print(f"\n필터 검증: 병합 결과 중 faction != {args.faction!r} 인 문서 {len(bad)}건"
+              + (" ⚠️" if bad else " ✅"))
 
 
+if __name__ == "__main__":
+    main()

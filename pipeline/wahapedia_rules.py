@@ -37,13 +37,23 @@ from core.utils import ensure_dir, load_json, project_dir, save_json
 log = get_logger(__name__)
 
 BASE_URL = "https://wahapedia.ru/aos4/the-rules/{slug}/"
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+from core.scrape_config import (
+    CHUNK_OVERLAP_CHARS,
+    HEADING_LEVELS,
+    MAX_CHUNK_CHARS,
+    MIN_CHUNK_CHARS,
+    NOISE_SELECTORS,
+    REQUEST_DELAY_S,
+    REQUEST_TIMEOUT_S,
+    RE_WHITESPACE,
+    SKIP_SECTIONS,
+    STRIP_TAGS,
+    TOC_HEADER_SELECTOR,
+    USER_AGENT,
+    WRAPPER_SELECTORS,
 )
+
 DATA_DIR = project_dir() / "data" / "wahapedia_rules"
-REQUEST_DELAY_S = 1.0
-REQUEST_TIMEOUT_S = 60
 
 # default=True 인 페이지가 기본 스크래핑 대상.
 # (First Blood / Path to Glory는 요청 범위 밖이라 기본 제외, slug 지정 시 사용 가능)
@@ -69,24 +79,37 @@ RULES_PAGES: dict[str, dict] = {
     "blighted-wilds": {"name": "Blighted Wilds", "category": "path_to_glory", "default": False},
 }
 
-HEADING_LEVELS = {"h1": 0, "h2": 1, "h3": 2, "h4": 3}
-NOISE_SELECTORS = (
-    ".tooltip_templates", ".noprint", ".NavBtn", ".NavWrapper_M",
-    ".NavDropdown", ".tooltipContents",
-    ".page_ads_wrapper", ".page_breaker_ads", ".page_ads_br1",
-    ".page_ads_br2", ".page_ads_br3",
-)
-SKIP_SECTIONS = {"Books"}   # 책 구매/개정 이력 테이블 — 룰 내용 아님
-MIN_CHUNK_CHARS = 40        # 목차 조각/빈 섹션 버리는 기준
-MAX_CHUNK_CHARS = 1800      # 이보다 길면 문장 경계에서 분할 (e5-base 512토큰 한계 내)
-
-
 def _norm(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
+    return RE_WHITESPACE.sub(" ", text).strip()
 
 
-def _split_long_text(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
-    """긴 섹션을 문장 경계 근처에서 max_chars 이하 조각으로 분할."""
+def _overlap_tail(piece: str, overlap_chars: int) -> str:
+    """청크 끝에서 오버랩으로 쓸 꼬리(마지막 1~2문장, ~overlap_chars자)를 추출.
+
+    꼬리가 문장 중간에서 시작하지 않도록 첫 문장 경계('. ') 이후부터,
+    문장 경계가 없으면 첫 단어 경계 이후부터 시작한다."""
+    if overlap_chars <= 0 or len(piece) <= overlap_chars:
+        return ""
+    tail = piece[-overlap_chars:]
+    sent = tail.find(". ")
+    if sent != -1 and sent + 2 < len(tail):
+        return tail[sent + 2:].strip()
+    space = tail.find(" ")
+    if space != -1:
+        return tail[space + 1:].strip()
+    return tail.strip()
+
+
+def _split_long_text(
+    text: str,
+    max_chars: int = MAX_CHUNK_CHARS,
+    overlap_chars: int = CHUNK_OVERLAP_CHARS,
+) -> list[str]:
+    """긴 섹션을 문장 경계 근처에서 max_chars 이하 조각으로 분할.
+
+    슬라이딩 윈도우: 직전 청크의 마지막 1~2문장(~overlap_chars자)을 다음
+    청크 시작 부분에 겹쳐, 청크 경계에서 문맥이 끊기지 않게 한다.
+    (cut ≥ max_chars//2 > overlap_chars 이므로 항상 전진 — 무한 루프 없음)"""
     if len(text) <= max_chars:
         return [text]
     parts = []
@@ -97,8 +120,11 @@ def _split_long_text(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
             cut = rest.rfind(" ", max_chars // 2, max_chars)
         if cut == -1:
             cut = max_chars
-        parts.append(rest[: cut + 1].strip())
-        rest = rest[cut + 1:].strip()
+        piece = rest[: cut + 1].strip()
+        parts.append(piece)
+        tail = _overlap_tail(piece, overlap_chars)
+        remainder = rest[cut + 1:].strip()
+        rest = f"{tail} {remainder}".strip() if tail else remainder
     if rest:
         parts.append(rest)
     return parts
@@ -109,15 +135,18 @@ def parse_rules_page(html: str, page_slug: str) -> list[dict]:
     page = RULES_PAGES[page_slug]
     soup = BeautifulSoup(html, "html.parser")
     # 잘못 중첩된 HTML 때문에 #wrapper에는 본문 일부만 담긴다 → 상위 #wrapper2 사용
-    wrapper = soup.select_one("#wrapper2") or soup.select_one("#wrapper") or soup
+    wrapper = next(
+        (w for sel in WRAPPER_SELECTORS if (w := soup.select_one(sel)) is not None),
+        soup,
+    )
 
-    for tag in wrapper.find_all(["script", "style", "noscript"]):
+    for tag in wrapper.find_all(list(STRIP_TAGS)):
         tag.decompose()
     for sel in NOISE_SELECTORS:
         for tag in wrapper.select(sel):
             tag.decompose()
     # 목차: .contents_header를 감싼 부모 span이 목차 전체
-    for toc_header in wrapper.select(".contents_header"):
+    for toc_header in wrapper.select(TOC_HEADER_SELECTOR):
         target = toc_header.parent if toc_header.parent and toc_header.parent.name == "span" else toc_header
         target.decompose()
 
