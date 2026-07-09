@@ -10,11 +10,28 @@ Usage:
     log.info("시작")
     log.error("실패: %s", err)
 """
+import contextvars
 import logging
 import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+# 현재 스레드(요청)의 세션 식별자. 동시 접속 시 어떤 사용자의 로그인지 구분.
+# 앱이 질문 처리 시작 시 set_log_session()으로 설정하면 이후 모든 로그 줄에
+# 자동으로 붙는다. 미설정 컨텍스트(파이프라인 스크립트 등)는 "-"로 표기.
+_session_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("log_session", default="-")
+
+
+def set_log_session(session_id: str) -> None:
+    """현재 컨텍스트(스레드)의 로그 세션 식별자를 설정."""
+    _session_ctx.set(session_id)
+
+
+class _SessionFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.session = _session_ctx.get()
+        return True
 
 # 기본값
 DEFAULT_LOG_LEVEL = os.environ.get("AOS_LOG_LEVEL", "INFO").upper()
@@ -35,8 +52,8 @@ _LEVEL_COLORS = {
 _RESET = "\033[0m"
 
 # 레벨 이름에만 색상 적용: %(levelname)-8s 자리를 컬러 버전으로 교체
-_LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-_COLOR_FORMAT = "%(asctime)s | {levelname} | %(name)s | %(message)s"
+_LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(session)s | %(name)s | %(message)s"
+_COLOR_FORMAT = "%(asctime)s | {levelname} | %(session)s | %(name)s | %(message)s"
 
 
 class _ColorFormatter(logging.Formatter):
@@ -77,10 +94,13 @@ def setup_logging(
     plain_formatter = logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
     color_formatter = _ColorFormatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
 
+    session_filter = _SessionFilter()
+
     if console:
         handler = logging.StreamHandler(sys.stderr)
         handler.setLevel(log_level)
         handler.setFormatter(color_formatter)
+        handler.addFilter(session_filter)
         root.addHandler(handler)
 
     dir_path = Path(log_dir) if log_dir is not None else DEFAULT_LOG_DIR
@@ -96,6 +116,7 @@ def setup_logging(
         )
         fh.setLevel(log_level)
         fh.setFormatter(plain_formatter)
+        fh.addFilter(session_filter)
         root.addHandler(fh)
     except OSError:
         root.warning("로그 파일을 열 수 없어 파일 로깅을 건너뜁니다: %s", filepath)

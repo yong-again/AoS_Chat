@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import threading
+import uuid
 from datetime import datetime
 import streamlit as st
 import chromadb
@@ -11,12 +13,17 @@ from dotenv import dotenv_values
 from tools import calculate_expected_damage
 import pprint
 import time
-from core.logging_config import setup_logging, get_logger
+from core.logging_config import setup_logging, get_logger, set_log_session
 from core.hybrid_search import BM25Index, rrf_fuse
 
 # 파이프라인 전 과정 로그: 콘솔 + runtime/logs/aos_chat.log (AOS_LOG_LEVEL로 레벨 조정)
 setup_logging()
 log = get_logger("aos.pipeline")
+
+# 임베딩 모델은 st.cache_resource로 전 세션이 공유하는 단일 인스턴스인데,
+# Streamlit은 세션마다 스레드를 띄우므로 동시 encode() 호출이 발생할 수 있다.
+# MPS(Apple GPU) 백엔드는 동시 호출에 취약해 락으로 직렬화한다.
+_EMBED_LOCK = threading.Lock()
 
 # ─── 채팅 내역 저장 ───────────────────────────────────────────────────────────
 HISTORY_DIR = "runtime/chat_history"
@@ -30,12 +37,16 @@ def append_qa_log(session_id: str, user_msg: str, bot_msg: str, db_name: str, se
     log_path = os.path.join(LOG_DIR, f"{today}.log")
     now = datetime.now().strftime("%H:%M:%S")
     separator = "─" * 60
+    # 동시 접속 시 사용자 간 줄 교차를 막기 위해 한 번의 write로 기록
+    entry = (
+        f"[{now}] SESSION: {session_id}\n"
+        f"[{now}] USER: {user_msg}\n"
+        f"[{now}] DB: {db_name}  |  키워드: {search_query}\n"
+        f"[{now}] BOT: {bot_msg}\n"
+        f"{separator}\n"
+    )
     with open(log_path, "a", encoding="utf-8") as f:
-        f.write(f"[{now}] SESSION: {session_id}\n")
-        f.write(f"[{now}] USER: {user_msg}\n")
-        f.write(f"[{now}] DB: {db_name}  |  키워드: {search_query}\n")
-        f.write(f"[{now}] BOT: {bot_msg}\n")
-        f.write(f"{separator}\n")
+        f.write(entry)
 
 def _session_file(session_id: str) -> str:
     return os.path.join(HISTORY_DIR, f"{session_id}.json")
@@ -390,6 +401,12 @@ SYSTEM_PROMPTS = {
         "유닛 이름은 unit_name 또는 name 필드에 있으며 대문자/일반 표기가 혼재합니다. 대소문자를 무시하고 매칭하세요. "
         "▶ 특정 유닛 질문: 스탯(이동/세이브/컨트롤/체력/워드), 무기 프로필(ranged_weapons/melee_weapons 또는 weapons), abilities(특수 능력), keywords를 모두 정리해서 보여주세요. "
         "   데이터 출처가 스피어헤드인 경우 '이 정보는 스피어헤드 데이터 기준입니다'라고 명시하세요. "
+        "▶ 스탯 표기 형식: 라벨을 정확히 '이동(Move)', '체력(Health)', '방호(Save)', '점령(Control)' 형태(한글+영문 병기)로, 이 순서대로 표기하세요. "
+        "   ward 값이 있으면(예: 5+) 방호 다음에 '와드(Ward)'를 넣어 이동→체력→방호→와드→점령 순서로 5개를, "
+        "   ward가 빈 값이면 와드 항목 자체를 생략하고 4개만 표기하세요 ('-'로 표기하지 마세요). "
+        "▶ 무기 프로필 표기 형식: 반드시 다음 컬럼 순서의 마크다운 표로 정리하세요 — "
+        "| 무기 | 사거리 | 공격횟수(Atk) | 명중(Hit) | 피해(Wnd) | 관통(Rnd) | 대미지(Dmg) | 특수 능력 |. "
+        "   range 값이 비어 있으면 근접 무기이므로 사거리를 '근접'으로, 값이 있으면 인치 그대로(예: 8\") 표기하세요. "
         "▶ 팩션 유닛 목록/종류 질문: '전체 유닛(워스크롤) 목록' 문서가 제공되면 그 문서의 카테고리 구분(영웅/보병/기병/괴수 등)을 유지하여 카테고리별 소제목 아래 빠짐없이 나열하세요. "
         "   그런 문서가 없으면 스탯과 무기 프로필을 갖춘 워스크롤 형태의 JSON 항목만 유닛으로 취급하고, 능력/주문/룰만 서술된 항목은 유닛이 아닙니다. "
         "[절대 금지]: 제공된 JSON에 없는 유닛을 유추하거나, 다른 팩션 데이터로 대답하거나, 외부 지식으로 정보를 보충하지 마세요. "
@@ -408,6 +425,11 @@ SYSTEM_PROMPTS = {
         "   이 값이 없는 항목은 목록에서 제외하세요. 파일명(출처)은 절대 답변에 노출하지 마세요. "
         "▶ 특정 스피어헤드 정보 질문: 해당 스피어헤드의 이름, 규칙(spearhead_rules), 포함 유닛 목록(unit_name)을 정리하세요. "
         "▶ 특정 스피어헤드 유닛 스탯 질문: 스탯과 무기 프로필을 설명하고 '스피어헤드 전용 데이터입니다'라고 명시하세요. "
+        "▶ 스탯 표기 형식: 라벨을 정확히 '이동(Move)', '체력(Health)', '방호(Save)', '점령(Control)' 형태(한글+영문 병기)로, 이 순서대로 표기하세요. "
+        "   와드 값이 있으면 방호 다음에 '와드(Ward)'를 넣어 이동→체력→방호→와드→점령 순서로, 없으면 와드를 생략하세요. "
+        "▶ 무기 프로필 표기 형식: 반드시 다음 컬럼 순서의 마크다운 표로 정리하세요 — "
+        "| 무기 | 사거리 | 공격횟수(Atk) | 명중(Hit) | 피해(Wnd) | 관통(Rnd) | 대미지(Dmg) | 특수 능력 |. "
+        "   문서의 Rng/Atk/Hit/Wnd/Rnd/Dmg 값을 그대로 옮기되, 사거리(Rng)가 없는 무기는 근접 무기이므로 '근접'으로 표기하세요. "
         "▶ 스피어헤드 배틀팩(Fire and Jade, Sand and Bone, City of Ash, Spearhead Doubles) 규칙 질문: "
         "   해당 배틀팩 문서([배틀팩 이름 | 섹션] 형식 텍스트)의 배틀플랜, 트위스트, 진행 규칙을 정리해 설명하세요. "
         "▶ 특정 스피어헤드로 배틀을 진행하는 과정 질문: 배틀팩 문서의 시퀀스를 골격으로 하되, "
@@ -536,13 +558,19 @@ def generate_search_query(query: str, db_name: str, client) -> str:
 
 def route_query(query: str, client) -> tuple[str, str]:
     """Gemini Flash-Lite로 (대상 DB, 질문 유형)을 분류합니다.
-    반환: (db_name, query_type) — 분류 실패 시 ("rule_db", "lookup") 폴백."""
+    반환: (db_name, query_type) — 분류/API 실패 시 ("rule_db", "lookup") 폴백."""
     prompt = ROUTER_PROMPT.format(query=query)
-    response = client.models.generate_content(
-        model=ROUTER_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(temperature=0.0),
-    )
+    try:
+        response = client.models.generate_content(
+            model=ROUTER_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.0),
+        )
+    except Exception:
+        # 동시 접속으로 레이트 리밋(429) 등 API 오류 시 앱을 죽이지 않고
+        # 기본 라우팅으로 폴백 (코드 레벨 안전장치들이 상당 부분 교정)
+        log.warning("라우터 API 호출 실패 — rule_db/lookup 폴백", exc_info=True)
+        return "rule_db", "lookup"
     raw = response.text.strip().lower()
     parts = [p.strip() for p in raw.split("|")]
     db_name = parts[0] if parts and parts[0] in DB_LABELS else "rule_db"
@@ -616,8 +644,13 @@ def rewrite_query_with_context(current_query: str, history: list, client) -> str
 gemini_client, embed_model, collections = load_resources()
 
 # session_state 초기화 (사이드바보다 먼저 실행되어야 함)
+# 동시 접속 대비: 초 단위 타임스탬프만으로는 같은 초에 접속한 두 사용자가
+# 같은 ID를 받아 기록이 섞이므로 uuid 접미사로 유일성 보장
+def _new_session_id() -> str:
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
 if "session_id" not in st.session_state:
-    st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.session_state.session_id = _new_session_id()
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
@@ -660,14 +693,17 @@ st.sidebar.download_button(
 # 새 대화 시작
 if st.sidebar.button("새 대화 시작"):
     save_chat_history(st.session_state.session_id, st.session_state.messages)
-    st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.session_state.session_id = _new_session_id()
     st.session_state.messages = [
         {"role": "assistant", "content": "안녕하세요! 워해머 규칙에 대해 무엇이든 물어보세요."}
     ]
     st.rerun()
 
 # 저장된 이전 세션 목록
-saved = list_saved_sessions()
+# 공유 모드(APP_ACCESS_CODE 설정)에서는 서버의 모든 세션이 노출되므로 숨김
+# — 접속자가 서로의(호스트 포함) 대화 기록을 열람하는 것을 방지
+_SHARED_MODE = bool(_ACCESS_CODE)
+saved = [] if _SHARED_MODE else list_saved_sessions()
 if saved:
     st.sidebar.caption(f"저장된 세션: {len(saved)}개")
     session_options = {
@@ -688,22 +724,23 @@ if saved:
             st.rerun()
 
 # ─── 개발자 로그 뷰어 ────────────────────────────────────────────────────────
-st.sidebar.divider()
-log_expander = st.sidebar.expander("🛠️ 개발자 로그 보기")
-with log_expander:
-    today = datetime.now().strftime("%Y-%m-%d")
-    log_path = os.path.join(LOG_DIR, f"{today}.log")
-    n_entries = st.sidebar.number_input("최근 대화 수", min_value=1, max_value=50, value=5, step=1)
-    if st.sidebar.button("🔄 새로고침", key="log_refresh"):
-        st.rerun()
-    if os.path.exists(log_path):
-        with open(log_path, "r", encoding="utf-8") as f:
-            raw = f.read()
-        entries = [e.strip() for e in raw.split("─" * 60) if e.strip()]
-        recent = entries[-n_entries:]
-        st.code("\n\n".join(recent), language=None)
-    else:
-        st.caption("오늘 기록된 로그가 없습니다.")
+# 공유 모드에서는 전 사용자의 Q&A 로그가 노출되므로 숨김
+if not _SHARED_MODE:
+    st.sidebar.divider()
+    with st.sidebar.expander("🛠️ 개발자 로그 보기"):
+        today = datetime.now().strftime("%Y-%m-%d")
+        log_path = os.path.join(LOG_DIR, f"{today}.log")
+        n_entries = st.sidebar.number_input("최근 대화 수", min_value=1, max_value=50, value=5, step=1)
+        if st.sidebar.button("🔄 새로고침", key="log_refresh"):
+            st.rerun()
+        if os.path.exists(log_path):
+            with open(log_path, "r", encoding="utf-8") as f:
+                raw = f.read()
+            entries = [e.strip() for e in raw.split("─" * 60) if e.strip()]
+            recent = entries[-n_entries:]
+            st.code("\n\n".join(recent), language=None)
+        else:
+            st.caption("오늘 기록된 로그가 없습니다.")
 
 AVATAR_USER      = "⚔️"   # 질문하는 플레이어
 AVATAR_ASSISTANT = "🏛️"   # AI 심판 (지그마의 서고)
@@ -723,6 +760,8 @@ if user_query := st.chat_input("질문을 입력하세요..."):
         with st.spinner("지그마의 서고를 뒤적이는 중..."):
 
             pipeline_t0 = time.monotonic()
+            # 이 스레드의 모든 로그 줄에 세션 식별자(뒤 6자리) 자동 표기
+            set_log_session(st.session_state.session_id[-6:])
             log.info("═══ 새 질문 (session=%s): %s", st.session_state.session_id, user_query)
 
             # 0. 문백을 반영한 쿼리 재작성 (대화 누적)
@@ -837,7 +876,8 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             # 질문 임베딩 검색이 받쳐주도록 병행 검색 후 병합한다.
             if db_name in ("rule_db", "spearhead_db") and rewritten_query and rewritten_query != _q:
                 query_texts.append("query: " + rewritten_query)
-            query_embeddings = embed_model.encode(query_texts).tolist()
+            with _EMBED_LOCK:
+                query_embeddings = embed_model.encode(query_texts).tolist()
             collection = collections[db_name]
             if len(query_texts) > 1:
                 log.info("[4.검색] 병행 검색: 키워드 임베딩 + 원문 질문 임베딩")
@@ -922,15 +962,19 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             except chromadb.errors.ChromaError as e:
                 # 앱 실행 중 외부에서 DB가 재빌드/컴팩션되면 캐시된 컬렉션
                 # 핸들이 사라진 세그먼트 파일을 가리켜 'hnsw segment reader:
-                # Nothing found on disk' 오류가 난다. Streamlit 리소스 캐시와
-                # chromadb 프로세스 내 클라이언트 캐시를 모두 비우고 핸들을
-                # 새로 받아 1회 재시도한다.
-                log.warning("[4.검색] Chroma 핸들 무효화 감지(%s: %s) → 리소스 재로딩 후 재시도",
+                # Nothing found on disk' 오류가 난다.
+                # 동시 접속 대비: st.cache_resource.clear()는 다른 사용자의
+                # 진행 중인 쿼리와 임베딩 모델·BM25 인덱스까지 날리므로 쓰지
+                # 않는다. 대신 chroma 클라이언트 캐시만 비워 새 핸들을 받고,
+                # 공유 collections dict를 제자리 갱신해 다른 세션도 다음
+                # 쿼리부터 새 핸들을 쓰게 한다.
+                log.warning("[4.검색] Chroma 핸들 무효화 감지(%s: %s) → 핸들 갱신 후 재시도",
                             type(e).__name__, str(e)[:120])
-                st.cache_resource.clear()
                 from chromadb.api.client import SharedSystemClient
                 SharedSystemClient.clear_system_cache()
-                gemini_client, embed_model, collections = load_resources()
+                fresh_client = chromadb.PersistentClient(path="./my_warhammer_db")
+                for _db in list(collections):
+                    collections[_db] = fresh_client.get_collection(name=_db)
                 collection = collections[db_name]
                 results = collection.query(**query_kwargs)
                 log.info("[4.검색] 재시도 성공")
