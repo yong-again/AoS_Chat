@@ -341,6 +341,14 @@ CLARIFY_BATTLEPACK_MSG = (
     "배틀 시작부터 라운드 종료까지 해당 배틀팩 규칙으로 정리해 드립니다."
 )
 
+# 무기 특수 능력 용어 감지: 질문이나 검색된 워스크롤에 이 용어가 보이면
+# 코어 룰 '20.0 Weapon Abilities' 정의 청크를 컨텍스트에 주입
+WEAPON_ABILITY_RE = re.compile(
+    r"companion|shoot\s+in\s+combat|crit\s*\(|anti-\s*\w+|charge\s*\(\+1\s*damage\)"
+    r"|blood-hungry|컴패니언|크릿|무기\s*(?:특수\s*)?능력",
+    re.I,
+)
+
 # 지시 표현 감지: 재작성 안전망에서 사용 (직전 답변의 대상을 가리키는 질문)
 DEMONSTRATIVE_RE = re.compile(
     r"(?:^|\s)(?:각|각각|해당|그|이|저|위)\s"
@@ -465,6 +473,24 @@ def load_bm25_index(db_name: str) -> BM25Index:
     """컬렉션 전체 문서로 BM25 인덱스를 구축 (DB별 1회, 캐시)."""
     _, _, cols = load_resources()
     return BM25Index.from_collection(cols[db_name])
+
+@st.cache_resource
+def load_weapon_ability_chunks() -> tuple[list[str], list[dict], list[str]]:
+    """rule_db의 '20.0 Weapon Abilities' 정의 청크 (시작 시 1회, 캐시).
+
+    Companion, Crit (Mortal) 등 무기 특수 능력의 정의는 코어 룰에만 있어
+    유닛/스피어헤드 질문의 컨텍스트에서 빠진다. 용어 감지 시 이 청크들을
+    컨텍스트에 함께 주입하는 데 사용."""
+    _, _, cols = load_resources()
+    got = cols["rule_db"].get(include=["documents", "metadatas"])
+    docs, metas, ids = [], [], []
+    for _id, doc, meta in zip(got["ids"], got["documents"], got["metadatas"]):
+        if "weapon abilit" in ((meta or {}).get("section") or "").lower():
+            ids.append(_id)
+            docs.append(doc)
+            metas.append(meta)
+    log.info("무기 능력 정의 청크: %d개 로드", len(ids))
+    return docs, metas, ids
 
 @st.cache_resource
 def load_spearhead_names() -> list[str]:
@@ -1285,6 +1311,35 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                                  else " (키워드 미포함)")
                 except Exception:
                     log.warning("[5.폴백] 프로브 크로스 DB 검색 실패", exc_info=True)
+
+            # 무기 능력 정의 주입: 질문 또는 검색된 문서에 무기 특수 능력
+            # 용어(Companion, Crit 등)가 보이면 코어 룰 정의 청크를 추가.
+            # 워스크롤(어느 무기에 붙었는지) + 정의(효과)를 한 컨텍스트로 제공.
+            try:
+                has_results = bool(results["ids"] and results["ids"][0])
+                scan_text = rewritten_query + " " + (
+                    " ".join(results["documents"][0]) if has_results else "")
+                matched_term = WEAPON_ABILITY_RE.search(scan_text)
+                if matched_term:
+                    wa_docs, wa_metas, wa_ids = load_weapon_ability_chunks()
+                    if not has_results:
+                        results["ids"] = [[]]
+                        results["documents"] = [[]]
+                        results["metadatas"] = [[]]
+                    existing = set(results["ids"][0])
+                    added = 0
+                    for _id, doc, meta in zip(wa_ids, wa_docs, wa_metas):
+                        if _id in existing:
+                            continue
+                        results["ids"][0].append(_id)
+                        results["documents"][0].append(doc)
+                        results["metadatas"][0].append(meta)
+                        added += 1
+                    if added:
+                        log.info("[5.보강] 무기 능력 정의 주입: %r 감지 → 코어 룰 청크 %d개 추가",
+                                 matched_term.group(0), added)
+            except Exception:
+                log.warning("[5.보강] 무기 능력 정의 주입 실패", exc_info=True)
 
             # 4. 컨텍스트 조합
             retrieved_context = ""
