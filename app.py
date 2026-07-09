@@ -275,7 +275,11 @@ ANSWER_PROFILES = {
 # ─── 라우터 프롬프트 ──────────────────────────────────────────────────────────
 ROUTER_PROMPT = """
 사용자의 질문을 분석하여 아래 5개 카테고리 중 가장 적합한 것을 하나만 선택하세요.
-아래 규칙을 1번부터 순서대로 검사하여, 가장 먼저 해당하는 규칙 하나만 적용하세요.
+아래 규칙을 0번부터 순서대로 검사하여, 가장 먼저 해당하는 규칙 하나만 적용하세요.
+0. 인사, 챗봇 자기소개/기능 문의("뭘 알려줄 수 있어?", "넌 누구야?"), 입문자 조언,
+   팩션/제품 추천, 취미 시작 방법 등 문서 검색이 필요 없는 일반 대화라면
+   카테고리 대신 chat 만 출력하세요.
+   단, 특정 규칙·용어·유닛·스탯·포인트·스피어헤드 데이터를 묻는 질문은 절대 chat이 아닙니다.
 1. 질문에 포인트, 점수, 비용, points, 부대 편성 등 비용/편성 관련 단어가 있으면 balance_db.
 2. 질문에 "스피어헤드", "뱅가드" 단어가 있더라도, "규칙", "진행 순서", "게임 방법" 등 게임을 플레이하는 방식에 대한 질문이라면 rule_db.
    단, 특정 배틀팩 이름(Fire and Jade, Sand and Bone, City of Ash, Spearhead Doubles)이나
@@ -287,7 +291,8 @@ ROUTER_PROMPT = """
    (예: "카라드론 오버로드 팩션의 스피어헤드 유닛 정보를 알려줘" → spearhead_db)
    'Regiment Ability(레지먼트 어빌리티)'는 스피어헤드 전용 룰 명칭이므로 spearhead_db.
    단, 'Enhancement(인핸스먼트)'는 정규 게임 공통 용어이므로 그것만으로 spearhead_db를 선택하지 마세요.
-4. 룰 용어/키워드(예: Ward, Rend, 차지)의 "의미", "뜻", "정의"를 묻는다면 rule_db.
+4. 룰 용어/키워드(예: Ward, Rend, 차지, Strike-first/last)의 "의미", "뜻", "정의"를 묻거나,
+   그 용어의 장단점·평가·활용법을 묻는다면 rule_db.
    단, 특정 유닛이나 팩션에 대한 설명 요청("~가 무엇인가요?" 형태라도 대상이 유닛/팩션이면)은 faction_db.
 5. 위 규칙에 해당하지 않으면 아래 카테고리 설명 중 가장 적합한 것을 선택.
 
@@ -302,6 +307,7 @@ lookup   : 규칙 원문/용어 정의/스탯/목록 등 문서 내용을 그대
 analysis : 장단점, 평가, 전략, 활용법, 시너지, 비교, 상성 등 해석·의견을 요청하는 질문
 
 반드시 "<카테고리>|<유형>" 형식으로만 출력하세요. (예: rule_db|lookup, faction_db|analysis)
+단, 규칙 0의 일반 대화라면 유형 없이 chat 만 출력하세요.
 
 사용자 질문: {query}"""
 
@@ -339,6 +345,36 @@ CLARIFY_BATTLEPACK_MSG = (
     "- **Spearhead Doubles** — 2대2 협동전 배틀팩\n\n"
     "예: *\"sand and bone에서 게임 진행 순서 알려줘\"* 처럼 질문해 주시면 "
     "배틀 시작부터 라운드 종료까지 해당 배틀팩 규칙으로 정리해 드립니다."
+)
+
+# 지원 팩션 목록 (메타데이터 필터링 + chat 모드 추천 근거로 사용)
+KNOWN_FACTIONS = [
+    "stormcast eternals", "nighthaunt", "lumineth realm lords",
+    "disciples of tzeentch", "hedonites of slaanesh", "maggotkin of nurgle",
+    "ossiarch bonereapers", "fyreslayers", "ogor mawtribes", "seraphon",
+    "sylvaneth", "daughters of khaine", "kharadron overlords",
+    "ironjawz", "orruk warclans", "gloomspite gitz", "slaves to darkness",
+    "soulblight gravelords", "flesh eater courts", "cities of sigmar",
+    "kruleboyz", "skaven", "blades of khorne", "idoneth deepkin",
+    "beasts of chaos", "helsmiths of hashut", "sons of behemat",
+    "bonesplitterz",
+]
+
+# chat 모드(일반 대화/안내) 전용 시스템 프롬프트 — 검색 없이 바로 답변
+CHAT_SYSTEM_PROMPT = (
+    "당신은 '워해머 에이지 오브 지그마 AI 룰마스터' 챗봇입니다. "
+    "지금 질문은 규칙 조회가 아닌 일반 대화/안내 질문으로 분류되었습니다. 한국어로 친근하게 답하세요. "
+    "▶ 자기소개/기능 문의: 다음 기능을 예시 질문과 함께 안내하세요 — "
+    "① 코어 룰·용어 정의 검색 (예: 'healing이 뭐야?', 'ward 세이브 설명해줘'), "
+    "② 유닛 스탯·워스크롤 조회 (예: 'Vanari Auralan Wardens 스탯 알려줘'), "
+    "③ 포인트·부대 편성 조회 (예: '스톰캐스트 리버레이터 포인트는?'), "
+    "④ 스피어헤드 규칙·구성 (예: 'Grundstok Trailblazers 유닛 알려줘', 'sand and bone 진행 순서'), "
+    "⑤ 기대 데미지 계산 (예: '4+ 명중 3+ 상처 무기 10발 기대 데미지'), "
+    "⑥ 규칙 해석·장단점 분석 (예: 'strike-last의 장점이 뭐야?'). "
+    "▶ 입문 조언·팩션 추천: 일반 지식으로 조언하되, 지원 팩션 목록을 참고하세요: "
+    + ", ".join(f.title() for f in KNOWN_FACTIONS) + ". "
+    "[금지] 특정 규칙 수치, 유닛 스탯, 포인트 값을 기억에 의존해 답하지 마세요. "
+    "그런 세부 정보를 물으면 해당 내용을 구체적으로 다시 질문하도록 안내하세요."
 )
 
 # 무기 특수 능력 용어 감지: 질문이나 검색된 워스크롤에 이 용어가 보이면
@@ -598,6 +634,8 @@ def route_query(query: str, client) -> tuple[str, str]:
         log.warning("라우터 API 호출 실패 — rule_db/lookup 폴백", exc_info=True)
         return "rule_db", "lookup"
     raw = response.text.strip().lower()
+    if raw.startswith("chat"):
+        return "chat", "chat"
     parts = [p.strip() for p in raw.split("|")]
     db_name = parts[0] if parts and parts[0] in DB_LABELS else "rule_db"
     query_type = (parts[1] if len(parts) > 1 and parts[1] in ANSWER_PROFILES
@@ -783,7 +821,10 @@ if user_query := st.chat_input("질문을 입력하세요..."):
 
     # 메인 UI 검색 로직 순서 수정
     with st.chat_message("assistant", avatar=AVATAR_ASSISTANT):
-        with st.spinner("지그마의 서고를 뒤적이는 중..."):
+        # 1단계: 질문 이해 (재작성·라우팅·안전장치)
+        # ※ 스피너 안에서 st.stop()을 부르면 스피너가 화면에 남으므로,
+        #   조기 응답(반문/chat)은 스피너를 정상 종료한 뒤 밖에서 렌더링한다.
+        with st.spinner("질문을 읽는 중..."):
 
             pipeline_t0 = time.monotonic()
             # 이 스레드의 모든 로그 줄에 세션 식별자(뒤 6자리) 자동 표기
@@ -817,10 +858,14 @@ if user_query := st.chat_input("질문을 입력하세요..."):
 
             # 1. 라우터: '사용자의 원본 질문'으로 (대상 DB, 질문 유형) 결정
             db_name, query_type = route_query(rewritten_query, gemini_client)
-            # 안전망: 라우터가 lookup으로 판정해도 분석 표현이 명시돼 있으면 분석 모드
-            query_mode = ("analysis"
-                          if query_type == "analysis" or ANALYSIS_RE.search(rewritten_query)
-                          else "lookup")
+            if query_type == "chat":
+                # 일반 대화 — '추천' 등 분석 regex와 겹칠 수 있어 chat 판정 우선
+                query_mode = "chat"
+            else:
+                # 안전망: 라우터가 lookup으로 판정해도 분석 표현이 명시돼 있으면 분석 모드
+                query_mode = ("analysis"
+                              if query_type == "analysis" or ANALYSIS_RE.search(rewritten_query)
+                              else "lookup")
             log.info("[2.라우터] 판정: %s / %s (라우터=%s, regex=%s)",
                      db_name, query_mode, query_type,
                      bool(ANALYSIS_RE.search(rewritten_query)))
@@ -869,21 +914,62 @@ if user_query := st.chat_input("질문을 입력하세요..."):
 
             # 스피어헤드 진행 질문 + 배틀팩 미지정: 진행 규칙은 배틀팩마다
             # 달라 개요 청크만 검색되므로, 검색 대신 배틀팩을 되묻는다
-            if (
+            # (렌더링은 스피너 종료 후 아래에서)
+            needs_battlepack_clarify = (
                 not matched_battlepack
                 and re.search(r"스피어헤드|스피어\s*모드|spearhead", rewritten_query, re.I)
                 and SPEARHEAD_PROGRESSION_RE.search(rewritten_query)
-            ):
-                log.info("[2.라우터] 스피어헤드 진행 질문 + 배틀팩 미지정 → 배틀팩 확인 반문")
-                st.markdown(CLARIFY_BATTLEPACK_MSG)
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": CLARIFY_BATTLEPACK_MSG})
-                save_chat_history(st.session_state.session_id, st.session_state.messages)
-                append_qa_log(st.session_state.session_id, user_query,
-                              CLARIFY_BATTLEPACK_MSG, "clarify", "")
-                st.stop()
+            )
 
-            # 2. 검색 쿼리 추출: 벡터 DB에 던질 '순수 영어 키워드'만 생성
+        # ── 조기 응답 분기 (1단계 스피너 종료 후) ────────────────────────────
+        if needs_battlepack_clarify:
+            log.info("[2.라우터] 스피어헤드 진행 질문 + 배틀팩 미지정 → 배틀팩 확인 반문")
+            st.markdown(CLARIFY_BATTLEPACK_MSG)
+            st.session_state.messages.append(
+                {"role": "assistant", "content": CLARIFY_BATTLEPACK_MSG})
+            save_chat_history(st.session_state.session_id, st.session_state.messages)
+            append_qa_log(st.session_state.session_id, user_query,
+                          CLARIFY_BATTLEPACK_MSG, "clarify", "")
+            st.stop()
+
+        # chat 모드: 일반 대화/안내 — 검색 파이프라인 전체를 생략하고 바로 답변.
+        # (질문에 스피어헤드 고유명 등이 있어 안전장치가 db_name을 교정한
+        # 경우는 chat이 아니므로 검색 경로로 복귀)
+        if db_name == "chat":
+            log.info("[3.chat] 일반 대화 모드 — 검색 생략")
+            with st.spinner("답변을 작성하는 중..."):
+                try:
+                    chat_resp = gemini_client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=rewritten_query,
+                        config=types.GenerateContentConfig(
+                            system_instruction=CHAT_SYSTEM_PROMPT,
+                            temperature=1.0,
+                            thinking_config=types.ThinkingConfig(thinking_budget=1000),
+                        ),
+                    )
+                    chat_answer = chat_resp.text
+                except Exception:
+                    log.warning("[3.chat] 일반 대화 응답 실패", exc_info=True)
+                    chat_answer = "죄송합니다, 지금 답변 생성에 문제가 있었어요. 잠시 후 다시 시도해 주세요."
+            chat_answer = f"{chat_answer}\n\n---\n💬 일반 안내"
+            st.markdown(chat_answer)
+            st.session_state.messages.append(
+                {"role": "assistant", "content": chat_answer})
+            save_chat_history(st.session_state.session_id, st.session_state.messages)
+            append_qa_log(st.session_state.session_id, user_query,
+                          chat_answer, "chat", "")
+            log.info("[7.답변] chat 완료: %.1fs, %d자",
+                     time.monotonic() - pipeline_t0, len(chat_answer))
+            st.stop()
+        elif query_mode == "chat":
+            # 안전장치가 데이터 질문으로 교정 → 답변 프로필을 검색 경로용으로 재산정
+            query_mode = "analysis" if ANALYSIS_RE.search(rewritten_query) else "lookup"
+            log.info("[2.라우터] chat 판정이 안전장치로 교정됨 → %s 프로필로 진행", query_mode)
+
+        # 2단계: 검색 + 답변 생성
+        with st.spinner("지그마의 서고를 뒤적이는 중..."):
+            # 검색 쿼리 추출: 벡터 DB에 던질 '순수 영어 키워드'만 생성
             search_query = generate_search_query(rewritten_query, db_name, gemini_client)
             # 빈 문자열("")이나 따옴표만 있는 경우 정리
             search_query = search_query.strip().strip('"').strip("'").strip()
@@ -938,19 +1024,7 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 include=["documents", "metadatas", "distances"],
             )
 
-            # [수정된 부분] 무조건 faction으로 필터링하지 않고, 검색어가 팩션 이름일 때만 적용합니다.
-            KNOWN_FACTIONS = [
-                "stormcast eternals", "nighthaunt", "lumineth realm lords",
-                "disciples of tzeentch", "hedonites of slaanesh", "maggotkin of nurgle",
-                "ossiarch bonereapers", "fyreslayers", "ogor mawtribes", "seraphon",
-                "sylvaneth", "daughters of khaine", "kharadron overlords",
-                "ironjawz", "orruk warclans", "gloomspite gitz", "slaves to darkness",
-                "soulblight gravelords", "flesh eater courts", "cities of sigmar",
-                "kruleboyz", "skaven", "blades of khorne", "idoneth deepkin",
-                "beasts of chaos", "helsmiths of hashut", "sons of behemat",
-                "bonesplitterz",
-            ]
-
+            # 무조건 faction으로 필터링하지 않고, 검색어가 팩션 이름일 때만 적용합니다.
             if faction_hint in KNOWN_FACTIONS:
                 query_kwargs["where"] = {"faction": faction_hint}
 
