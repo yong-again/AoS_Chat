@@ -181,6 +181,22 @@ streamlit run app.py
 
 브라우저 채팅창에서 규칙·팩션 관련 질문을 입력하면 RAG 기반으로 답변과 출처가 표시됩니다.
 
+### 외부 공유 (Cloudflare Tunnel)
+
+```bash
+# 앱 + 터널을 한 번에 실행 (앱이 이미 떠 있으면 터널만 시작)
+./scripts/share.sh
+
+# 접근 코드를 걸어서 공유 (권장 — 링크 유출 시 Gemini 쿼터 보호)
+APP_ACCESS_CODE=원하는코드 ./scripts/share.sh
+```
+
+- 출력되는 `https://<랜덤>.trycloudflare.com` URL을 상대에게 전달하면 됩니다.
+- URL은 터널을 켤 때마다 바뀌고, `Ctrl+C`로 종료하면 즉시 무효화됩니다.
+- 사전 요구: `brew install cloudflared` (Cloudflare 계정 불필요)
+- 주의: 모든 질문이 호스트의 `GEMINI_API_KEY`로 과금되며, Wahapedia 데이터는
+  개인 활용 목적이므로 소수 지인 공유 용도로만 사용하세요.
+
 ---
 
 ## DB 분류 기준

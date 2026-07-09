@@ -213,6 +213,20 @@ def inject_theme():
 
 inject_theme()
 
+# ─── 접근 코드 게이트 (선택) ──────────────────────────────────────────────────
+# 외부 공유(Cloudflare Tunnel 등) 시 APP_ACCESS_CODE 환경변수를 설정하면
+# 코드를 아는 사람만 사용 가능. 미설정이면 게이트 없음 (로컬 사용 영향 없음).
+_ACCESS_CODE = os.environ.get("APP_ACCESS_CODE", "")
+if _ACCESS_CODE and not st.session_state.get("access_granted"):
+    st.title("Warhammer Age of Sigmar AI 룰마스터")
+    _code = st.text_input("접근 코드를 입력하세요", type="password")
+    if _code == _ACCESS_CODE:
+        st.session_state.access_granted = True
+        st.rerun()
+    elif _code:
+        st.error("코드가 올바르지 않습니다.")
+    st.stop()
+
 st.title("Warhammer Age of Sigmar AI 룰마스터")
 st.caption("공식 규칙 문서와 FAQ를 기반으로 답변하는 AI 심판입니다.")
 
