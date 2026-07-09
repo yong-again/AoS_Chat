@@ -257,9 +257,11 @@ ROUTER_PROMPT = """
    특정 스피어헤드/유닛 이름이 함께 언급되면 spearhead_db.
    (예: "sand and bone에서 grundstok trailblazers로 플레이하는 과정 알려줘" → spearhead_db)
 3. 질문에 "스피어헤드"가 있고 유닛/구성/스탯/정보를 묻는다면 spearhead_db.
-   특정 팩션의 스피어헤드 고유 명칭(예: Hurakan Vanguard)이나 스피어헤드 배틀팩
+   특정 팩션의 스피어헤드 고유 명칭(예: Hurakan Vanguard, Grundstok Trailblazers)이나 스피어헤드 배틀팩
    (Fire and Jade, Sand and Bone, City of Ash, Spearhead Doubles)의 규칙을 묻는 경우도 spearhead_db.
    (예: "카라드론 오버로드 팩션의 스피어헤드 유닛 정보를 알려줘" → spearhead_db)
+   'Regiment Ability(레지먼트 어빌리티)'는 스피어헤드 전용 룰 명칭이므로 spearhead_db.
+   단, 'Enhancement(인핸스먼트)'는 정규 게임 공통 용어이므로 그것만으로 spearhead_db를 선택하지 마세요.
 4. 룰 용어/키워드(예: Ward, Rend, 차지)의 "의미", "뜻", "정의"를 묻는다면 rule_db.
    단, 특정 유닛이나 팩션에 대한 설명 요청("~가 무엇인가요?" 형태라도 대상이 유닛/팩션이면)은 faction_db.
 5. 위 규칙에 해당하지 않으면 아래 카테고리 설명 중 가장 적합한 것을 선택.
@@ -428,6 +430,20 @@ def load_bm25_index(db_name: str) -> BM25Index:
     _, _, cols = load_resources()
     return BM25Index.from_collection(cols[db_name])
 
+@st.cache_resource
+def load_spearhead_names() -> list[str]:
+    """spearhead_db 메타데이터에서 스피어헤드 고유명 사전을 구축 (시작 시 1회).
+    질문에 스피어헤드 이름이 있는데 '스피어헤드' 단어가 없어 라우터가
+    faction_db 등으로 보내는 오분류를 교정하는 데 사용."""
+    _, _, cols = load_resources()
+    got = cols["spearhead_db"].get(include=["metadatas"])
+    names = sorted({
+        m.get("spearhead_name") for m in got["metadatas"]
+        if m and m.get("spearhead_name")
+    })
+    log.info("스피어헤드 고유명 사전: %d종", len(names))
+    return names
+
 # ─── LLM 유틸리티 함수 ────────────────────────────────────────────────────────
 # 2. 쿼리 확장 함수 수정 (원본 질문 유지 + 영어 번역 병기)
 def generate_search_query(query: str, db_name: str, client) -> str:
@@ -471,7 +487,11 @@ def generate_search_query(query: str, db_name: str, client) -> str:
        - 본스플리터즈 → BONESPLITTERZ
     5. 룰 용어/키워드의 뜻·정의·규칙을 묻는 경우: 그 용어의 영어 키워드만 출력하세요.
        '코어룰', 'core rules', '용어집', '규칙서' 같은 문서 이름은 검색어에 절대 포함하지 마세요.
-    6. 한국어 서술어는 모두 제거하세요.
+    6. 질문에 유닛/스피어헤드 고유명이 있으면 절대 버리지 말고 반드시 키워드에 포함하세요.
+       (예: 'Grundstok Trailblazers의 Regiment Abilities' 질문에서 'Regiment Abilities'만
+       추출하면 안 됩니다 — 고유명이 없으면 다른 부대의 문서가 검색됩니다.)
+    7. 키워드가 여러 개여도 줄바꿈 없이 한 줄에 공백으로 구분해 출력하세요.
+    8. 한국어 서술어는 모두 제거하세요.
 
     예시: grundstok trailblazers에 대해 알고 싶어 -> Grundstok Trailblazers
     예시: 카하드론 그런드스탁 트레일블레이저스 정보 -> Grundstok Trailblazers
@@ -484,6 +504,8 @@ def generate_search_query(query: str, db_name: str, client) -> str:
     예시: 코어룰에서 healing이라는 용어를 찾아서 알려줘 -> Healing
     예시: ward 세이브가 뭐야 -> Ward
     예시: 렌드가 무슨 뜻이야 -> Rend
+    예시: Grundstok Trailblazers의 Regiment Abilities와 Enhancements를 알려줘 -> Grundstok Trailblazers Regiment Abilities Enhancements
+    예시: 후라칸 뱅가드의 인핸스먼트 알려줘 -> Hurakan Vanguard Enhancements
 
     질문: {query}
     출력:
@@ -744,6 +766,28 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                     db_name = "spearhead_db"
                     log.info("[2.라우터] 안전장치: 배틀팩 질문 → spearhead_db 교정")
 
+            # 라우터 안전장치 3: 질문에 스피어헤드 고유명(DB 메타데이터 사전)이
+            # 있으면 spearhead_db로 교정. '스피어헤드' 단어 없이 이름만 언급된
+            # 질문(예: "Grundstok Trailblazers의 Regiment Abilities")이 대상.
+            if db_name != "spearhead_db":
+                q_norm = re.sub(r"[^a-z0-9]+", " ", rewritten_query.lower())
+                matched_sp_name = next(
+                    (nm for nm in load_spearhead_names()
+                     if re.sub(r"[^a-z0-9]+", " ", nm.lower()).strip() in q_norm),
+                    None,
+                )
+                if matched_sp_name:
+                    db_name = "spearhead_db"
+                    log.info("[2.라우터] 안전장치: 스피어헤드 고유명 %r 감지 → spearhead_db 교정",
+                             matched_sp_name)
+
+            # 라우터 안전장치 4: 'Regiment Ability'는 스피어헤드 전용 룰 명칭.
+            # (Enhancement는 정규 게임 공통 용어이므로 단독으로는 신호로 쓰지 않음)
+            if db_name != "spearhead_db" and re.search(
+                    r"regiment\s*abilit|레지먼트\s*어빌리티", rewritten_query, re.I):
+                db_name = "spearhead_db"
+                log.info("[2.라우터] 안전장치: Regiment Ability(스피어헤드 전용 용어) → spearhead_db 교정")
+
             # 스피어헤드 진행 질문 + 배틀팩 미지정: 진행 규칙은 배틀팩마다
             # 달라 개요 청크만 검색되므로, 검색 대신 배틀팩을 되묻는다
             if (
@@ -764,6 +808,8 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             search_query = generate_search_query(rewritten_query, db_name, gemini_client)
             # 빈 문자열("")이나 따옴표만 있는 경우 정리
             search_query = search_query.strip().strip('"').strip("'").strip()
+            # LLM이 키워드를 여러 줄로 출력하는 경우가 있어 한 줄로 정규화
+            search_query = re.sub(r"\s+", " ", search_query)
             faction_hint = search_query.lower().replace("-", " ").strip()
             log.info("[3.키워드] 추출: %r (faction_hint=%r)", search_query, faction_hint)
             # 다음 턴의 재작성 안전망에서 쓸 직전 검색 주제 저장
@@ -787,6 +833,7 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             # 빈 컬렉션은 HNSW 인덱스가 없어 쿼리가 실패하므로 건너뛰고,
             # 특정 DB의 실패가 나머지 조사를 막지 않도록 개별 처리한다.
             probe, probe_failed = {}, []
+            best_db = None
             for _db, _col in collections.items():
                 try:
                     if _col.count() == 0:
@@ -1156,6 +1203,30 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                                  len(sp_fallback["ids"]))
                 except Exception:
                     log.warning("[5.폴백] spearhead_db 크로스 검색 실패", exc_info=True)
+
+            # 프로브 기반 크로스 DB 폴백: 선택 DB 결과에 키워드가 여전히 없고,
+            # 임베딩 최근접 DB가 선택 DB와 다르면 그 DB를 추가 검색해 병합.
+            # 라우팅이 어떤 이유로든 틀렸을 때의 범용 회복 장치.
+            if (
+                best_db and best_db != db_name and search_query
+                and not _keyword_hit(flat_docs, search_query)
+            ):
+                try:
+                    alt = collections[best_db].query(
+                        query_embeddings=[query_embeddings[0]],
+                        n_results=N_RESULTS.get(best_db, 10),
+                        include=["documents", "metadatas", "distances"],
+                    )
+                    if alt["ids"] and alt["ids"][0]:
+                        results["documents"][0] = alt["documents"][0] + flat_docs
+                        results["metadatas"][0] = alt["metadatas"][0] + results["metadatas"][0]
+                        flat_docs = results["documents"][0]
+                        log.info("[5.폴백] 프로브 크로스 DB 검색(%s → %s): %d개 문서 추가%s",
+                                 db_name, best_db, len(alt["ids"][0]),
+                                 "" if _keyword_hit(alt["documents"][0], search_query)
+                                 else " (키워드 미포함)")
+                except Exception:
+                    log.warning("[5.폴백] 프로브 크로스 DB 검색 실패", exc_info=True)
 
             # 4. 컨텍스트 조합
             retrieved_context = ""
