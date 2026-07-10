@@ -18,7 +18,10 @@ runtime/
 # - data/warscolls, data/wahapedia_* : pipeline.wahapedia* 로 재생성
 # - data/outputs : main.py(PDF 파이프라인) 결과
 # - data/pdfs : scripts/download_pdfs.py 로 재다운로드
-data/
+# 예외: data/eval/rag_eval_qa.json (손으로 작성한 평가 문항 — 재생성 불가)
+data/*
+!data/eval/
+data/eval/results/
 *.pdf
 *.tmp
 *.cache

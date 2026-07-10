@@ -54,11 +54,12 @@ def load_wahapedia_warscrolls(collection, embed_model):
             )
 
 
-def load_wahapedia_rules(collections, embed_model):
+def load_wahapedia_rules(collections, embed_model, targets=None):
     """wahapedia_rules/<slug>.json을 페이지별 대상 DB(rule_db/spearhead_db)에 적재.
 
     스피어헤드 배틀팩 페이지는 룰 질문/스피어헤드 질문 어느 쪽 라우팅에도
     걸리도록 두 컬렉션에 모두 들어간다.
+    targets가 주어지면 그 컬렉션에만 적재한다 (--only 부분 재구성용).
     """
     from pipeline.wahapedia_rules import DATA_DIR as RULES_DIR, chunk_payload, page_db_targets
 
@@ -72,6 +73,8 @@ def load_wahapedia_rules(collections, embed_model):
         if docs:
             embeddings = embed_model.encode(["passage: " + d for d in docs]).tolist()
             for name in page_db_targets(filepath.stem):
+                if targets and name not in targets:
+                    continue
                 collections[name].add(
                     documents=docs,
                     embeddings=embeddings,
@@ -101,8 +104,9 @@ def load_wahapedia_balance(collection, embed_model):
             )
 
 
-def load_wahapedia_faction_rules(collections, embed_model):
-    """wahapedia_factions/<slug>.json을 faction_db/spearhead_db에 나눠 적재."""
+def load_wahapedia_faction_rules(collections, embed_model, targets=None):
+    """wahapedia_factions/<slug>.json을 faction_db/spearhead_db에 나눠 적재.
+    targets가 주어지면 그 컬렉션에만 적재한다."""
     from pipeline.wahapedia_factions import DATA_DIR as FACTIONS_DIR
     from pipeline.wahapedia_factions import chunk_payload as faction_chunk_payload
 
@@ -114,6 +118,8 @@ def load_wahapedia_faction_rules(collections, embed_model):
     for filepath in tqdm(files, desc="적재 중 [faction/spearhead_db/wahapedia]"):
         payload = faction_chunk_payload(filepath)
         for db_name, (docs, metadatas, ids) in payload.items():
+            if targets and db_name not in targets:
+                continue
             if docs:
                 embeddings = embed_model.encode(["passage: " + d for d in docs]).tolist()
                 collections[db_name].add(
@@ -141,33 +147,44 @@ def _iter_rule_chunks(node, path: str = "", max_chars: int = 2000):
             yield from _iter_rule_chunks(item, path, max_chars)
 
 
-def build_database(with_pdf: bool = False):
-    """ChromaDB 전체 재구성.
+def build_database(with_pdf: bool = False, only: str | None = None):
+    """ChromaDB 재구성.
 
     기본은 wahapedia 스크래핑 데이터만 사용한다 (PDF 추출본은 패러프레이징된
     텍스트라 원문 정확도가 낮음). PDF outputs/ 데이터를 함께 적재하려면
     with_pdf=True (CLI: --with-pdf).
+    단, other_db(특수 캠페인 룰)는 wahapedia 소스가 없어 PDF 추출본이 유일한
+    소스이므로 --with-pdf 없이도 항상 outputs/other_db에서 적재한다.
+    only가 주어지면 해당 컬렉션만 삭제·재적재하고 나머지는 건드리지 않는다.
     """
+    targets = {only} if only else set(cfg.DB_NAMES)
     log.info("임베딩 모델 로드 중: %s", EMBEDDING_MODEL_NAME)
     embed_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 
     log.info("ChromaDB 클라이언트 초기화 중 (경로: %s)", DB_PATH)
     chroma_client = chromadb.PersistentClient(path=DB_PATH)
 
-    # DB 타겟별 컬렉션 생성 (기존 데이터가 있다면 초기화)
+    # DB 타겟별 컬렉션 생성 (재구성 대상만 초기화, 나머지는 기존 것 유지)
     collections = {}
     for db_name in cfg.DB_NAMES:
-        try:
-            chroma_client.delete_collection(name=db_name)
-            log.info("기존 컬렉션 삭제됨: %s", db_name)
-        except Exception:
-            pass  # 컬렉션이 없는 경우 패스
-        collections[db_name] = chroma_client.create_collection(name=db_name)
+        if db_name in targets:
+            try:
+                chroma_client.delete_collection(name=db_name)
+                log.info("기존 컬렉션 삭제됨: %s", db_name)
+            except Exception:
+                pass  # 컬렉션이 없는 경우 패스
+            collections[db_name] = chroma_client.create_collection(name=db_name)
+        else:
+            collections[db_name] = chroma_client.get_or_create_collection(name=db_name)
 
-    log.info("데이터 청킹 및 적재 시작... (PDF 포함: %s)", with_pdf)
+    log.info("데이터 청킹 및 적재 시작... (PDF 포함: %s, 대상: %s)",
+             with_pdf, ", ".join(sorted(targets)))
 
-    # outputs 하위 폴더 순회 (--with-pdf일 때만)
-    for db_name in cfg.DB_NAMES if with_pdf else ():
+    # outputs 하위 폴더 순회 (기본은 other_db만, --with-pdf면 전체)
+    pdf_dbs = cfg.DB_NAMES if with_pdf else ("other_db",)
+    for db_name in pdf_dbs:
+        if db_name not in targets:
+            continue
         db_dir = OUTPUT_DIR / db_name
         if not db_dir.exists():
             log.warning("폴더가 없습니다 스킵: %s", db_dir)
@@ -271,18 +288,21 @@ def build_database(with_pdf: bool = False):
                 )
 
     # wahapedia warscroll 데이터를 faction_db에 추가 적재
-    load_wahapedia_warscrolls(collections["faction_db"], embed_model)
+    if "faction_db" in targets:
+        load_wahapedia_warscrolls(collections["faction_db"], embed_model)
 
     # wahapedia The Rules 데이터를 rule_db(+배틀팩은 spearhead_db)에 추가 적재
-    load_wahapedia_rules(collections, embed_model)
+    if targets & {"rule_db", "spearhead_db"}:
+        load_wahapedia_rules(collections, embed_model, targets)
 
     # wahapedia 팩션 룰/스피어헤드 룰을 faction_db/spearhead_db에 추가 적재
-    load_wahapedia_faction_rules(collections, embed_model)
+    if targets & {"faction_db", "spearhead_db"}:
+        load_wahapedia_faction_rules(collections, embed_model, targets)
 
     # wahapedia 워스크롤의 포인트 정보를 balance_db에 적재
     # (PDF 미포함 모드에서 balance_db가 비지 않도록; PDF 포함 시에는
     # 중복 포인트가 충돌할 수 있어 PDF 배틀 프로필만 사용)
-    if not with_pdf:
+    if not with_pdf and "balance_db" in targets:
         load_wahapedia_balance(collections["balance_db"], embed_model)
 
     log.info("=== 모든 데이터베이스 구축이 성공적으로 완료되었습니다 ===")
@@ -293,5 +313,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ChromaDB 재구성 (기본: wahapedia 데이터만)")
     parser.add_argument("--with-pdf", action="store_true",
                         help="outputs/의 PDF 추출 데이터도 함께 적재")
+    parser.add_argument("--only", choices=cfg.DB_NAMES,
+                        help="지정한 컬렉션만 재구성 (나머지는 유지)")
     args = parser.parse_args()
-    build_database(with_pdf=args.with_pdf)
+    build_database(with_pdf=args.with_pdf, only=args.only)

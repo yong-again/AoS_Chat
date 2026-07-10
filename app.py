@@ -294,13 +294,17 @@ ROUTER_PROMPT = """
 4. 룰 용어/키워드(예: Ward, Rend, 차지, Strike-first/last)의 "의미", "뜻", "정의"를 묻거나,
    그 용어의 장단점·평가·활용법을 묻는다면 rule_db.
    단, 특정 유닛이나 팩션에 대한 설명 요청("~가 무엇인가요?" 형태라도 대상이 유닛/팩션이면)은 faction_db.
+   질문이 "규칙"이라는 단어를 쓰더라도 특정 유닛의 고유 능력을 묻는 것이면 faction_db입니다.
+   (예: "레이디 올린더 때리려는데 공격이 잘 안 박히는 규칙이 있다던데?" → 유닛(Lady Olynder)의
+   고유 능력 질문이므로 faction_db)
 5. 위 규칙에 해당하지 않으면 아래 카테고리 설명 중 가장 적합한 것을 선택.
 
 rule_db      : 코어 룰, 용어집, 키워드 정의, 일반/스피어헤드 게임 진행 순서 및 메커니즘
 faction_db   : 특정 유닛의 스탯, 무기, 팩션 고유 능력, 워스크롤
 balance_db   : 유닛의 포인트 가격, 부대 편성 제한, 레지먼트
 spearhead_db : 스피어헤드 모드 전용 룰, 스피어헤드 세트 구성(warscrolls), 팩션 고유 규칙(spearhead_rules)
-other_db     : 특수 캠페인 룰 (예: 기란의 재앙)
+other_db     : 특수 캠페인 룰 — Scourge of Ghyran(스컬지 오브 기란, 기란의 재앙) 등.
+               팩션 이름이 함께 나와도 캠페인 이름이 언급되면 other_db.
 
 추가로 질문 유형을 판별하세요:
 lookup   : 규칙 원문/용어 정의/스탯/목록 등 문서 내용을 그대로 조회하는 질문
@@ -392,6 +396,11 @@ DEMONSTRATIVE_RE = re.compile(
     r"|전부|모두|나머지|둘\s*다"
 )
 
+# Scourge of Ghyran(기란의 재앙) 캠페인 감지: 캠페인 룰은 other_db에만 있는데
+# 질문에 팩션 이름이 함께 나오면 라우터가 faction_db로 보내는 오분류를 교정
+SCOURGE_RE = re.compile(
+    r"scourge\s*of\s*ghyran|스컬지\s*오브\s*기란|기란의\s*재앙", re.I)
+
 # 스피어헤드 배틀팩 감지 패턴 → 소스 파일 매핑
 # (질문에 특정 배틀팩이 명시되면 라우팅 교정 + 다른 배틀팩 청크 오염 차단에 사용)
 BATTLEPACK_SOURCES = {
@@ -423,7 +432,9 @@ N_RESULTS = {
     "faction_db":   15,
     "balance_db":   60,
     "spearhead_db": 20,
-    "other_db":     5,
+    # other_db: 캠페인 청크가 작고 캠페인 이름이 전 청크에 공통이라 변별력이
+    # 낮음 — RRF 융합 컷에서 밀리지 않도록 넉넉히 가져온다
+    "other_db":     25,
 }
 
 SYSTEM_PROMPTS = {
@@ -546,7 +557,10 @@ def load_spearhead_names() -> list[str]:
 # 2. 쿼리 확장 함수 수정 (원본 질문 유지 + 영어 번역 병기)
 def generate_search_query(query: str, db_name: str, client) -> str:
     """벡터 DB 검색에 최적화되도록 팩션 이름과 한국어 서술어를 버리고 오직 '핵심 영어 키워드'만 추출합니다."""
-    
+
+    # 한국어 음차로 언급된 스피어헤드 이름을 공식 철자로 변환할 수 있게 목록 제공
+    spearhead_name_list = ", ".join(load_spearhead_names())
+
     extraction_prompt = f'''
     사용자의 워해머 에이지 오브 지그마 질문에서 벡터 DB 검색에 쓸 영어 키워드를 추출하세요.
     ⚠️[주의]: 아래 규칙을 반드시 따르세요.
@@ -590,8 +604,16 @@ def generate_search_query(query: str, db_name: str, client) -> str:
        추출하면 안 됩니다 — 고유명이 없으면 다른 부대의 문서가 검색됩니다.)
     7. 키워드가 여러 개여도 줄바꿈 없이 한 줄에 공백으로 구분해 출력하세요.
     8. 한국어 서술어는 모두 제거하세요.
+    9. 고유명이 한국어 음차로 적혀 있으면 반드시 워해머 공식 영어 철자로 변환하세요.
+       임의로 발음을 옮겨 적지 말고 정확한 공식 철자를 쓰세요.
+       (예: 레이디 올린더 → Lady Olynder, 인드라스타 → Yndrasta, 텐가바르 → Thengavar,
+       스컬지 오브 기란 → Scourge of Ghyran)
+       스피어헤드 이름은 반드시 아래 공식 명칭 목록에서 일치하는 것을 찾아 그 철자 그대로 출력하세요:
+       {spearhead_name_list}
 
     예시: grundstok trailblazers에 대해 알고 싶어 -> Grundstok Trailblazers
+    예시: 스카벤 놀피스트 클로팩의 인핸스먼트 알려줘 -> Gnawfeast Clawpack Enhancements
+    예시: 레이디 올린더 공격할 때 적용되는 규칙 알려줘 -> Lady Olynder
     예시: 카하드론 그런드스탁 트레일블레이저스 정보 -> Grundstok Trailblazers
     예시: 인드라스타의 스피어헤드 규칙 -> Yndrasta's Spearhead
     예시: 카하드론 오버로드 스피어헤드 목록 -> KHARADRON OVERLORDS
@@ -604,6 +626,8 @@ def generate_search_query(query: str, db_name: str, client) -> str:
     예시: 렌드가 무슨 뜻이야 -> Rend
     예시: Grundstok Trailblazers의 Regiment Abilities와 Enhancements를 알려줘 -> Grundstok Trailblazers Regiment Abilities Enhancements
     예시: 후라칸 뱅가드의 인핸스먼트 알려줘 -> Hurakan Vanguard Enhancements
+    예시: 스컬지 오브 기란 스톰캐스트 룰 중에 유닛이 파괴될 때 버티는 능력이 뭐야 -> Scourge of Ghyran Stormcast Eternals destroyed
+    (캠페인 이름만 추출하면 안 됩니다 — 팩션과 질문 주제 키워드를 함께 남기세요)
 
     질문: {query}
     출력:
@@ -912,6 +936,13 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                 db_name = "spearhead_db"
                 log.info("[2.라우터] 안전장치: Regiment Ability(스피어헤드 전용 용어) → spearhead_db 교정")
 
+            # 라우터 안전장치 5: Scourge of Ghyran 캠페인 질문은 other_db로 교정.
+            # 캠페인 룰은 other_db에만 있는데 질문에 팩션 이름이 함께 나오면
+            # 라우터가 faction_db를 고르는 오분류가 발생한다.
+            if db_name != "other_db" and SCOURGE_RE.search(rewritten_query):
+                db_name = "other_db"
+                log.info("[2.라우터] 안전장치: Scourge of Ghyran 캠페인 감지 → other_db 교정")
+
             # 스피어헤드 진행 질문 + 배틀팩 미지정: 진행 규칙은 배틀팩마다
             # 달라 개요 청크만 검색되므로, 검색 대신 배틀팩을 되묻는다
             # (렌더링은 스피너 종료 후 아래에서)
@@ -980,13 +1011,30 @@ if user_query := st.chat_input("질문을 입력하세요..."):
             # 다음 턴의 재작성 안전망에서 쓸 직전 검색 주제 저장
             st.session_state.last_search_query = search_query
 
+            # 라우터 안전장치 6(추출 후): 추출된 검색어에 스피어헤드 고유명이
+            # 있으면 spearhead_db로 교정. 질문이 한국어 음차(예: '놀피스트
+            # 클로팩')면 안전장치 3의 영문 사전 매칭이 빗나가지만, 추출 단계가
+            # 공식 영문명으로 변환하므로 여기서 결정적으로 잡는다.
+            if db_name != "spearhead_db" and search_query:
+                sq_norm = re.sub(r"[^a-z0-9]+", " ", search_query.lower())
+                matched_sq_name = next(
+                    (nm for nm in load_spearhead_names()
+                     if re.sub(r"[^a-z0-9]+", " ", nm.lower()).strip() in sq_norm),
+                    None,
+                )
+                if matched_sq_name:
+                    db_name = "spearhead_db"
+                    log.info("[3.키워드] 안전장치: 추출 검색어에서 스피어헤드 고유명 %r 감지 → spearhead_db 교정",
+                             matched_sq_name)
+
             # 3. 쿼리 임베딩 & 벡터 검색 (순수 영어 키워드로 검색하여 정확도 100% 달성)
             _q = search_query if search_query else rewritten_query
             query_texts = ["query: " + _q]
-            # rule_db/spearhead_db: 키워드 추출이 검색어를 훼손하거나(예: 'healing'
-            # 탈락) 배틀팩+유닛처럼 대상이 둘인 질문에서 한쪽만 추출돼도 원문
-            # 질문 임베딩 검색이 받쳐주도록 병행 검색 후 병합한다.
-            if db_name in ("rule_db", "spearhead_db") and rewritten_query and rewritten_query != _q:
+            # rule_db/spearhead_db/other_db: 키워드 추출이 검색어를 훼손하거나
+            # (예: 'healing' 탈락, 캠페인 이름만 남고 주제 탈락) 대상이 둘인
+            # 질문에서 한쪽만 추출돼도 원문 질문 임베딩 검색이 받쳐주도록
+            # 병행 검색 후 병합한다.
+            if db_name in ("rule_db", "spearhead_db", "other_db") and rewritten_query and rewritten_query != _q:
                 query_texts.append("query: " + rewritten_query)
             with _EMBED_LOCK:
                 query_embeddings = embed_model.encode(query_texts).tolist()
@@ -1322,6 +1370,9 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                                                 limit=30 if warscroll_only else 5,
                                                 warscroll_only=warscroll_only)
                     if fallback["ids"]:
+                        # ids도 함께 갱신해야 1차 검색 0건일 때 컨텍스트 조립
+                        # 가드(ids 기준)가 폴백 문서를 버리지 않는다
+                        results["ids"][0] = fallback["ids"] + results["ids"][0]
                         results["documents"][0] = fallback["documents"] + flat_docs
                         results["metadatas"][0] = fallback["metadatas"] + results["metadatas"][0]
                         flat_docs = results["documents"][0]
@@ -1351,8 +1402,9 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                                 include=["documents", "metadatas"]
                             )
 
-                    # 4. 기존 결과 상단에 싹쓸이한 데이터 추가
+                    # 4. 기존 결과 상단에 싹쓸이한 데이터 추가 (ids 포함)
                     if sp_fallback["ids"]:
+                        results["ids"][0] = sp_fallback["ids"] + results["ids"][0]
                         results["documents"][0] = sp_fallback["documents"] + flat_docs
                         results["metadatas"][0] = sp_fallback["metadatas"] + results["metadatas"][0]
                         # flat_docs 변수 갱신
@@ -1376,6 +1428,7 @@ if user_query := st.chat_input("질문을 입력하세요..."):
                         include=["documents", "metadatas", "distances"],
                     )
                     if alt["ids"] and alt["ids"][0]:
+                        results["ids"][0] = alt["ids"][0] + results["ids"][0]
                         results["documents"][0] = alt["documents"][0] + flat_docs
                         results["metadatas"][0] = alt["metadatas"][0] + results["metadatas"][0]
                         flat_docs = results["documents"][0]

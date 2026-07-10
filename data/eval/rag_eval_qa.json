@@ -1,0 +1,135 @@
+[
+  {
+    "question": "인드라스타한테 워드 세이브 있어? 있으면 몇이야?",
+    "expected_answer": "있습니다. Yndrasta the Celestial Spear는 WARD (5+) 키워드를 가지고 있어 5+ 워드 세이브를 사용합니다. 기본 스탯은 이동 12\", 체력 8, 세이브 3+입니다.",
+    "ground_truth_context": "faction_db / warscolls/stormcast-eternals.json > 'Yndrasta the Celestial Spear': {\"move\": \"12\\\"\", \"health\": \"8\", \"save\": \"3+\", \"ward\": \"5+\", \"keywords\": [..., \"WARD ( 5+ )\", ...]}",
+    "expected_db_route": "faction_db",
+    "mandatory_keywords": ["Yndrasta", "5+", "워드"]
+  },
+  {
+    "question": "클랜랫이 모델 몇 개 죽었는데, 죽은 모델 다시 살릴 수 있는 능력이 있었던 것 같은데 뭐였지?",
+    "expected_answer": "Clanrats의 'SEETHING SWARM' 능력입니다. 아무 턴이든 턴 종료 시(End of Any Turn) 슬레인된 모델을 D3개까지 유닛으로 되돌릴 수 있습니다.",
+    "ground_truth_context": "faction_db / warscolls/skaven.json > 'Clanrats' > abilities: {\"name\": \"SEETHING SWARM\", \"timing\": \"End of Any Turn\", \"effect\": \"You can return D3 slain models to this unit.\"}",
+    "expected_db_route": "faction_db",
+    "mandatory_keywords": ["Seething Swarm", "D3", "End of Any Turn"]
+  },
+  {
+    "question": "스톰핀드가 이번 턴에 돌격했는데 둠플레이어 건틀릿에 데미지 보너스 붙나요?",
+    "expected_answer": "네. Stormfiends의 Doomflayer Gauntlets는 Charge (+1 Damage) 무기 능력을 가지고 있어, 유닛이 이번 턴 돌격했다면 Damage 특성이 D3에서 D3+1이 됩니다. (기본 프로파일: 공격 5회, 명중 4+, 상처 2+, 렌드 2, 데미지 D3)",
+    "ground_truth_context": "faction_db / warscolls/skaven.json > 'Stormfiends' > melee_weapons: {\"name\": \"Doomflayer Gauntlets\", \"attacks\": \"5\", \"hit\": \"4+\", \"wound\": \"2+\", \"rend\": \"2\", \"damage\": \"D3\", \"abilities\": [\"Charge (+1 Damage)\"]} + rule_db core_rules mechanics: \"Weapon Ability - Charge (+1 Damage): Add 1 to this weapon's Damage characteristic if the attacking unit charged this turn.\"",
+    "expected_db_route": "faction_db",
+    "mandatory_keywords": ["Doomflayer Gauntlets", "Charge (+1 Damage)", "D3+1"]
+  },
+  {
+    "question": "인드라스타로 몬스터 잡을 때 텐가바르 데미지가 얼마나 나와요? 원래보다 세지나요?",
+    "expected_answer": "네. Yndrasta의 패시브 'THE PRIME HUNTRESS'는 MONSTER를 대상으로 하는 공격에서 Thengavar의 Damage 특성을 2배로 만듭니다. 근접 Thengavar 기본 데미지는 3이므로 몬스터 상대로는 6, 원거리 Thengavar는 기본 4이므로 8이 됩니다. 또한 Thengavar는 Anti-MONSTER (+1 Rend)도 가지고 있습니다.",
+    "ground_truth_context": "faction_db / warscolls/stormcast-eternals.json > 'Yndrasta the Celestial Spear' > abilities: {\"name\": \"THE PRIME HUNTRESS\", \"timing\": \"Passive\", \"effect\": \"Double the Damage characteristic of this unit's Thengavar for attacks that target MONSTERS.\"} / melee Thengavar damage \"3\", ranged Thengavar damage \"4\", abilities [\"Anti- MONSTER (+1 Rend)\"]",
+    "expected_db_route": "faction_db",
+    "mandatory_keywords": ["The Prime Huntress", "Thengavar", "MONSTER", "2배"]
+  },
+  {
+    "question": "레이디 올린더 때리려는데 뭔가 공격이 잘 안 박히는 규칙이 있다던데 그게 뭐예요?",
+    "expected_answer": "Lady Olynder, Mortarch of Grief의 패시브 'MORTARCH OF GRIEF' 때문입니다. 이 유닛을 대상으로 하는 공격의 무보정(unmodified) 히트 롤 또는 무보정 운드 롤이 1~4이면 그 공격은 실패하고 공격 시퀀스가 종료됩니다. 추가로 WARD (5+)도 가지고 있습니다.",
+    "ground_truth_context": "faction_db / warscolls/nighthaunt.json > 'Lady Olynder Mortarch of Grief' > abilities: {\"name\": \"MORTARCH OF GRIEF\", \"timing\": \"Passive\", \"effect\": \"If the unmodified hit roll or unmodified wound roll for an attack that targets this unit is 1-4, the attack fails and the attack sequence ends.\"} / ward: \"5+\"",
+    "expected_db_route": "faction_db",
+    "mandatory_keywords": ["Mortarch of Grief", "1-4", "unmodified"]
+  },
+  {
+    "question": "실바네스 마법 중에 와일드우드 새로 깔 수 있는 주문이 뭐였죠?",
+    "expected_answer": "스펠 로어의 'TREESONG'입니다. 히어로 페이즈에 아군 SYLVANETH WIZARD가 시전(캐스팅 롤 2D6)하며, 전장에 아군 Awakened Wyldwood가 3개 미만이면 시전자로부터 24\" 내(목표물에서 3\" 초과, 적 유닛/다른 지형에서 1\" 초과)에 새 Wyldwood를 설치할 수 있습니다. 이미 3개 이상이면 각 아군 Wyldwood를 3운드씩 회복시킵니다.",
+    "ground_truth_context": "faction_db / outputs/faction_db/faction_pack_sylvaneth.json > army_rules.lores: {\"name\": \"TREESONG\", \"type\": \"SPELL\", \"effect\": \"...If fewer than 3 friendly Awakened Wyldwoods are on the battlefield, you may set up a new one wholly within 24\\\" of the caster...If 3 or more are present, heal 3 wounds to each friendly Awakened Wyldwood.\"}",
+    "expected_db_route": "faction_db",
+    "mandatory_keywords": ["Treesong", "Awakened Wyldwood", "24\""]
+  },
+  {
+    "question": "리디플로이 커맨드 쓰면 얼마나 움직일 수 있어요? 제한 같은 거 있나요?",
+    "expected_answer": "Redeploy는 무브먼트 페이즈 커맨드로, 전투 중(in combat)이 아닌 아군 유닛을 선택해 각 모델이 최대 D6\" 이동할 수 있습니다. 단, 그 이동은 적 유닛의 컴뱃 레인지를 통과하거나 그 안에서 끝날 수 없습니다.",
+    "ground_truth_context": "rule_db / core_rules mechanics: {\"name\": \"Movement Phase Command - Redeploy\", \"effect\": \"Declare: Pick a friendly unit that is not in combat... Each model in that unit can move up to D6\\\". That move cannot pass through or end within the combat range of an enemy unit.\"}",
+    "expected_db_route": "rule_db",
+    "mandatory_keywords": ["Redeploy", "D6\"", "컴뱃 레인지"]
+  },
+  {
+    "question": "무기에 크릿(모탈) 붙어 있으면 6 뜨면 정확히 어떻게 처리해요?",
+    "expected_answer": "Crit (Mortal) 무기로 크리티컬 히트가 나오면, 그 공격은 해당 무기의 Damage 특성만큼의 모탈 데미지를 대상 유닛에 입히고 공격 시퀀스는 즉시 종료됩니다(운드 롤·세이브 롤 없음).",
+    "ground_truth_context": "rule_db / core_rules mechanics: {\"name\": \"Weapon Ability - Crit (Mortal)\", \"effect\": \"If an attack made with this weapon scores a critical hit, that attack inflicts mortal damage on the target unit equal to the Damage characteristic of that weapon and the attack sequence ends.\"}",
+    "expected_db_route": "rule_db",
+    "mandatory_keywords": ["Crit (Mortal)", "모탈 데미지", "Damage 특성"]
+  },
+  {
+    "question": "랠리 커맨드로 죽은 모델도 되살릴 수 있나요? 된다면 어떻게 계산해요?",
+    "expected_answer": "가능합니다. Rally는 전투 중이 아닌 아군 유닛을 선택해 D6을 6개 굴리고, 4+ 하나당 랠리 포인트 1점을 얻습니다. 랠리 포인트 1점당 Heal (1)을 하거나, 그 유닛의 Health 특성과 같은 수의 랠리 포인트를 소모하면 슬레인 모델 1개를 되돌릴 수 있습니다. 예를 들어 체력 2짜리 모델을 되살리려면 랠리 포인트 2점이 필요하며, 남은 포인트는 소멸합니다.",
+    "ground_truth_context": "rule_db / core_rules mechanics: {\"name\": \"Hero Phase Command - Rally\", \"effect\": \"...Make 6 rally rolls of D6. For each 4+, you receive 1 rally point. ...For each rally point spent, Heal (1) that unit. You can spend a number of rally points equal to the Health characteristic of that unit to return a slain model to that unit. ...Unspent rally points are then lost.\"}",
+    "expected_db_route": "rule_db",
+    "mandatory_keywords": ["Rally", "4+", "Health 특성", "랠리 포인트"]
+  },
+  {
+    "question": "파워 스루 커맨드는 아무 유닛한테나 쓸 수 있는 건가요? 조건이 뭐예요?",
+    "expected_answer": "아닙니다. Power Through는 이번 턴에 돌격한 아군 유닛만 사용할 수 있고, 대상으로 지정하는 적 유닛은 사용하는 유닛보다 Health 특성이 낮아야 합니다. 효과는 대상에게 D3 모탈 데미지를 입힌 뒤, 사용한 유닛이 자신의 Move 특성까지 이동할 수 있습니다.",
+    "ground_truth_context": "rule_db / core_rules mechanics: {\"name\": \"POWER THROUGH\", \"effect\": \"Declare: Pick a friendly unit that charged this turn... The target must have a lower Health characteristic than the unit using this ability. Effect: Inflict D3 mortal damage on the target. Then, the unit using this ability can move a distance up to its Move characteristic...\"}",
+    "expected_db_route": "rule_db",
+    "mandatory_keywords": ["Power Through", "돌격", "Health 특성", "D3 모탈"]
+  },
+  {
+    "question": "클랜랫 한 유닛에 몇 마리 들어가고 포인트는 얼마예요?",
+    "expected_answer": "Clanrats는 유닛 규모 20모델에 150포인트입니다.",
+    "ground_truth_context": "balance_db / battle_profiles.json: {\"unit_name\": \"Clanrats\", \"points\": \"150\", \"unit_size\": \"20\"}",
+    "expected_db_route": "balance_db",
+    "mandatory_keywords": ["Clanrats", "150", "20"]
+  },
+  {
+    "question": "그레이 시어 포인트 최근에 바뀌지 않았어요? 지금 얼마고, 레지먼트에는 뭘 붙일 수 있죠?",
+    "expected_answer": "Grey Seer는 현재 110포인트이며, 배틀 프로파일에 -10 표기가 있어 최근 10포인트 인하된 것입니다. 레지먼트 옵션은 '0-1 Skaven Overclaw, Any SKAVEN'으로, Skaven Overclaw 0~1개와 임의의 SKAVEN 유닛을 편성할 수 있습니다.",
+    "ground_truth_context": "balance_db / battle_profiles.json: {\"unit_name\": \"Grey Seer\", \"points\": \"110 (-10)\", \"unit_size\": \"1\", \"regiment_options\": \"0-1 Skaven Overclaw, Any SKAVEN\"}",
+    "expected_db_route": "balance_db",
+    "mandatory_keywords": ["Grey Seer", "110", "Skaven Overclaw"]
+  },
+  {
+    "question": "레이디 올린더 넣으면 몇 포인트예요? 올린더 레지먼트에는 어떤 유닛 넣을 수 있어요?",
+    "expected_answer": "Lady Olynder, Mortarch of Grief는 320포인트(유닛 규모 1)입니다. 레지먼트 옵션은 '0-1 Cursed Soul, Any NIGHTHAUNT'로, Cursed Soul 0~1개와 임의의 NIGHTHAUNT 유닛을 포함할 수 있습니다.",
+    "ground_truth_context": "balance_db / battle_profiles.json: {\"unit_name\": \"Lady Olynder, Mortarch of Grief\", \"points\": \"320\", \"unit_size\": \"1\", \"regiment_options\": \"0-1 Cursed Soul, Any NIGHTHAUNT\"}",
+    "expected_db_route": "balance_db",
+    "mandatory_keywords": ["320", "Cursed Soul", "NIGHTHAUNT"]
+  },
+  {
+    "question": "포인트 채우기 애매한데, 100포인트 이하이면서 한 유닛에 10마리 이상 나오는 저렴한 보병 유닛 몇 개만 추천해 줄래?",
+    "expected_answer": "배틀 프로파일 기준으로 100포인트 이하·유닛 규모 10 이상인 유닛에는 Hobgrot Vandalz(70pt/10모델), Flagellants(80pt/10모델), Skinks(80pt/10모델), Bloodreavers(80pt/10모델), Dryads(90pt/10모델), Deathrattle Skeletons(90pt/10모델), Chainrasps(100pt/10모델) 등이 있습니다.",
+    "ground_truth_context": "balance_db / battle_profiles.json 필터링(points<=100 AND unit_size>=10): Hobgrot Vandalz 70/10, Flagellants 80/10, Skinks 80/10, Bloodreavers 80/10, Dryads 90/10, Deathrattle Skeletons 90/10, Chainrasps '100 (-10)'/10 등",
+    "expected_db_route": "balance_db",
+    "mandatory_keywords": ["Hobgrot Vandalz", "70", "Flagellants", "80"]
+  },
+  {
+    "question": "스피어헤드에서 나이트혼트 슬래셔 호스트 쓰는데, 돌격 굴림이 잘 나오면 뭔가 디버프 주는 룰이 있었죠?",
+    "expected_answer": "'WAVE OF TERROR'입니다. 차지 페이즈에 아군 유닛이 돌격했고 그 차지 롤이 10+였다면 이 능력을 사용해, 그 유닛으로부터 1\" 내의 적 유닛 하나를 대상으로 지정합니다. 대상은 이번 턴 동안 STRIKE-LAST를 가집니다.",
+    "ground_truth_context": "spearhead_db / outputs/spearhead_db/spearhead_nighthaunt_-_slasher_host.json > spearhead_rules: {\"name\": \"WAVE OF TERROR\", \"effect\": \"Any Charge Phase: ...pick a friendly unit... if it charged this phase and the charge roll was 10+. Then, pick an enemy unit within 1\\\"... The target has STRIKE-LAST this turn.\"}",
+    "expected_db_route": "spearhead_db",
+    "mandatory_keywords": ["Wave of Terror", "10+", "STRIKE-LAST"]
+  },
+  {
+    "question": "스카벤 놀피스트 클로팩에서 장군한테 줄 수 있는 인핸스먼트 중에 워드 주는 게 있나요?",
+    "expected_answer": "네, 'CLOAK OF STITCHED VICTORIES'입니다. 이 인핸스먼트를 선택하면 장군이 WARD (5+)를 가집니다. 그 외 인핸스먼트로는 SKRYRE CONNECTIONS(장군의 Ratling Pistol 공격 횟수 D6→2D6), WARPSTONE CHARM(장군과 전투 중인 적 세이브 롤 -1) 등이 있습니다.",
+    "ground_truth_context": "spearhead_db / outputs/spearhead_db/spearhead_skaven_gnawfeast_clawpack.json > spearhead_rules: {\"name\": \"CLOAK OF STITCHED VICTORIES\", \"effect\": \"Your general has WARD (5+).\"}",
+    "expected_db_route": "spearhead_db",
+    "mandatory_keywords": ["Cloak of Stitched Victories", "WARD (5+)", "장군"]
+  },
+  {
+    "question": "스피어헤드에서 승점은 매 라운드 어떻게 계산해요?",
+    "expected_answer": "스피어헤드에서는 목표물(objective)을 1개 이상 컨트롤하면 승점 1점, 2개 이상 컨트롤하면 추가 1점, 상대보다 많은 목표물을 컨트롤하면 추가 1점을 얻고, 이번 턴에 완료한 배틀 택틱 1개당 승점 1점을 얻습니다. 전투 종료 시 승점이 가장 많은 플레이어가 승리하며, 동점이면 무승부입니다.",
+    "ground_truth_context": "spearhead_db(rule_db 병행 적재) / core_rules_spearhead_rules... > spearhead_rules.mechanics: {\"name\": \"Victory Points (Spearhead)\", \"effect\": \"Score 1 victory point if you control at least one objective. Score 1 victory point if you control two or more objectives. Score 1 victory point if you control more objectives than your opponent. Score 1 victory point for each battle tactic you completed this turn.\"} + \"Glorious Victory (Spearhead)\"",
+    "expected_db_route": "spearhead_db",
+    "mandatory_keywords": ["승점", "목표물", "배틀 택틱"]
+  },
+  {
+    "question": "스컬지 오브 기란 스톰캐스트 룰 중에 유닛이 파괴될 때 버티는 능력이 있다던데 어떻게 작동해요?",
+    "expected_answer": "'LEGENDARY TENACITY'입니다. 이 유닛이 처음 파괴될 상황이 되면 제거하기 전에 D6을 굴려, 3+가 나오면 유닛은 파괴되지 않고 남은 데미지 포인트도 무효가 되며, 이후 그 유닛을 Heal (D3) 합니다. 전투당 첫 파괴 시점 한 번만 적용됩니다.",
+    "ground_truth_context": "other_db / outputs/other_db/scourge_of_ghyran_-_stormcast_eternals.json > army_rules: {\"name\": \"LEGENDARY TENACITY\", \"effect\": \"The first time this unit would be destroyed, before removing it from play, roll a dice. On a 3+, this unit is not destroyed and any remaining damage points inflicted on it have no effect. Then, Heal (D3) this unit.\"}",
+    "expected_db_route": "other_db",
+    "mandatory_keywords": ["Legendary Tenacity", "3+", "Heal (D3)"]
+  },
+  {
+    "question": "스컬지 오브 기란 룰 중에 'Their Finest Hour'를 한 번 더 쓸 수 있게 해주는 게 있다고 들었는데 맞아요?",
+    "expected_answer": "맞습니다. Scourge of Ghyran 스톰캐스트의 'HOUR OF GLORY'입니다. 이 유닛은 이번 전투에서 이미 'Their Finest Hour'를 사용했더라도 다시 그 능력의 대상으로 선택될 수 있으며, 'Their Finest Hour' 사용 시 턴이 끝날 때까지 컨트롤 스코어에 5를 더합니다.",
+    "ground_truth_context": "other_db / outputs/other_db/scourge_of_ghyran_-_stormcast_eternals.json > army_rules: {\"name\": \"HOUR OF GLORY\", \"effect\": \"This unit can be picked to use the 'Their Finest Hour' ability even if it has already used it this battle. In addition, when this unit is picked to use the 'Their Finest Hour' ability, add 5 to its control score for the rest of the turn.\"}",
+    "expected_db_route": "other_db",
+    "mandatory_keywords": ["Hour of Glory", "Their Finest Hour", "5", "컨트롤 스코어"]
+  }
+]
