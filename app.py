@@ -184,7 +184,7 @@ def inject_theme():
     .stChatMessage p, .stChatMessage li, .stChatMessage td {
         font-family: 'Cinzel', serif !important;
         color: #e8d9b0 !important;
-        line-height: 1.8 !important;
+        line-height: 1.8 !important; 
     }
     .stChatMessage strong {
         color: #c9a84c !important;
@@ -470,8 +470,9 @@ SYSTEM_PROMPTS = {
     "balance_db": (
         "당신은 워해머 에이지 오브 지그마의 포인트 및 편성 전문가입니다. "
         "제공된 배틀 프로필을 바탕으로 포인트, 유닛 사이즈, 편성 제한을 한국어로 정확히 답변하세요. "
-        "[경고]: 반드시 unit_name 필드가 일치하는 데이터를 찾으세요. 일치하는 데이터가 없다면, 다른 영웅의 편성 제한 등을 대신 말하지 마세요. "
-        "대신 '해당 유닛의 포인트 정보를 찾을 수 없습니다. 찾으시는 유닛의 정확한 영문 이름을 알려주시겠어요?'라고 되물어보세요."
+        "질문의 유닛 이름이 한국어 표기나 축약형이어도 unit_name 필드와 같은 유닛을 가리키면 그 데이터를 사용하세요. "
+        "[경고]: 다른 유닛의 포인트나 편성 제한을 대신 말하지 마세요. 같은 유닛으로 볼 수 있는 데이터가 정말 없을 때만 "
+        "'해당 유닛의 포인트 정보를 찾을 수 없습니다. 찾으시는 유닛의 정확한 영문 이름을 알려주시겠어요?'라고 되물어보세요."
     ),
     "spearhead_db": (
         "당신은 워해머 에이지 오브 지그마 스피어헤드 모드 전문가입니다. "

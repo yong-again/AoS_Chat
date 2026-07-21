@@ -23,6 +23,7 @@ import functools
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -52,14 +53,37 @@ JUDGE_MODEL = "gemini-2.5-flash-lite"
 _orig_generate = app.gemini_client.models.generate_content
 _RETRYABLE = ("429", "503", "RESOURCE_EXHAUSTED", "UNAVAILABLE", "overloaded")
 
+# SDK에 호출 타임아웃이 없어 네트워크 스톨 시 무한 대기 — 데몬 스레드로 상한을 건다
+_CALL_TIMEOUT_S = 180
+
+
+def _call_with_timeout(kwargs):
+    result = {}
+
+    def target():
+        try:
+            result["value"] = _orig_generate(**kwargs)
+        except Exception as e:  # noqa: BLE001 — 호출 스레드로 예외 전달용
+            result["error"] = e
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(_CALL_TIMEOUT_S)
+    if t.is_alive():
+        raise TimeoutError(f"Gemini 호출이 {_CALL_TIMEOUT_S}s를 초과")
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
 
 def _generate_with_retry(**kwargs):
     delays = [5, 15, 30, 60]
     for attempt in range(len(delays) + 1):
         try:
-            return _orig_generate(**kwargs)
+            return _call_with_timeout(kwargs)
         except Exception as e:
-            if attempt < len(delays) and any(t in str(e) for t in _RETRYABLE):
+            retryable = isinstance(e, TimeoutError) or any(t in str(e) for t in _RETRYABLE)
+            if attempt < len(delays) and retryable:
                 log.warning("Gemini 일시 오류(%s) — %ds 후 재시도 (%d/%d)",
                             str(e)[:80], delays[attempt], attempt + 1, len(delays))
                 time.sleep(delays[attempt])

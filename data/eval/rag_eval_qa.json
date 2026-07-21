@@ -36,10 +36,10 @@
   },
   {
     "question": "실바네스 마법 중에 와일드우드 새로 깔 수 있는 주문이 뭐였죠?",
-    "expected_answer": "스펠 로어의 'TREESONG'입니다. 히어로 페이즈에 아군 SYLVANETH WIZARD가 시전(캐스팅 롤 2D6)하며, 전장에 아군 Awakened Wyldwood가 3개 미만이면 시전자로부터 24\" 내(목표물에서 3\" 초과, 적 유닛/다른 지형에서 1\" 초과)에 새 Wyldwood를 설치할 수 있습니다. 이미 3개 이상이면 각 아군 Wyldwood를 3운드씩 회복시킵니다.",
-    "ground_truth_context": "faction_db / outputs/faction_db/faction_pack_sylvaneth.json > army_rules.lores: {\"name\": \"TREESONG\", \"type\": \"SPELL\", \"effect\": \"...If fewer than 3 friendly Awakened Wyldwoods are on the battlefield, you may set up a new one wholly within 24\\\" of the caster...If 3 or more are present, heal 3 wounds to each friendly Awakened Wyldwood.\"}",
+    "expected_answer": "Lords of the Clan 포메이션 스펠 로어의 'CALL FORTH THE FOREST'입니다. 히어로 페이즈에 아군 LORDS OF THE CLAN WIZARD가 시전(캐스팅 롤 2D6)하며, 전장에 아군 Awakened Wyldwood가 9개 미만이면 시전자로부터 24\" 내(목표물에서 3\" 초과, 적 유닛/다른 지형에서 1\" 초과)에 새 Wyldwood를 설치할 수 있습니다. 이미 9개면 대신 각 아군 Awakened Wyldwood를 3힐(Heal 3)합니다.",
+    "ground_truth_context": "faction_db / wahapedia_factions/sylvaneth.json > Lords of the Clan > Spell Lore: \"CALL FORTH THE FOREST ... If there are fewer than 9 friendly Awakened Wyldwoods on the battlefield, you can set up an Awakened Wyldwood wholly within 24\\\" of the caster, more than 3\\\" from all objectives and more than 1\\\" from all enemy units and other terrain features.\" (구판 PDF 팩션 팩의 TREESONG은 신판에서 삭제 — 신판 TREESONG은 이름만 같은 스피어헤드 인핸스먼트)",
     "expected_db_route": "faction_db",
-    "mandatory_keywords": ["Treesong", "Awakened Wyldwood", "24\""]
+    "mandatory_keywords": ["Call Forth the Forest", "Awakened Wyldwood", "24\""]
   },
   {
     "question": "리디플로이 커맨드 쓰면 얼마나 움직일 수 있어요? 제한 같은 거 있나요?",
